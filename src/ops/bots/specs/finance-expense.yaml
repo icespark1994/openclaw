@@ -1,0 +1,21 @@
+# Finance Expense Bot — Sample Spec
+#
+# Deploy this bot to enable /bot-invoke finance-expense <message> in the control channel.
+#
+# Usage:
+#   Copy to ~/.openclaw/bots/finance-expense.yaml  (or OPENCLAW_BOTS_DIR)
+#   Then: /bot-deploy  (or use /bot-draft-deploy if creating from scratch)
+#
+# The "finance/expense_v1" skill is handled by the expense adapter
+# (src/ops/expense/expense-adapter.ts) — no container deployment needed for Stage 9A.
+# The skill dispatch registry routes this skill ID to the adapter automatically.
+
+version: 1
+id: finance-expense
+name: Finance Expense Bot
+description: Classifies employee expense descriptions using the finance/expense_v1 skill.
+model:
+  id: openrouter/anthropic/claude-haiku-4-5
+skills:
+  - finance/expense_v1
+enabled: true

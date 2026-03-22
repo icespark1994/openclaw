@@ -12,8 +12,9 @@
 import YAML from "yaml";
 import { BotSpecV1 } from "./bot-spec.js";
 import { BotManager, type BotManagerConfig } from "./bot-manager.js";
-import { loadBotRegistry } from "./registry.js";
+import { loadBotRegistry, getBotSpecById } from "./registry.js";
 import { checkDeployGuards } from "./deploy-guard.js";
+import { dispatchSkill, registeredSkillIds } from "../expense/skill-dispatch.js";
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -133,6 +134,51 @@ export class ControlService {
 		} catch (err) {
 			return { ok: false, message: errMsg(err) };
 		}
+	}
+
+	/**
+	 * Invoke a bot's skill with a user message.
+	 *
+	 * Looks up the bot by ID in the registry, finds the first skill that has
+	 * a registered handler, and dispatches the message to that handler.
+	 * The skill registry is the extensible dispatch layer — adding a new skill
+	 * only requires registering a handler there, not modifying this method.
+	 */
+	async invokeBot(id: string, message: string): Promise<ControlResponse> {
+		// 1. Look up the bot spec
+		let spec;
+		try {
+			const { specs } = await loadBotRegistry(this.specDir);
+			spec = getBotSpecById(specs, id);
+		} catch {
+			// Registry load failure — proceed to the not-found error below
+		}
+
+		if (!spec) {
+			return {
+				ok: false,
+				message: `Bot "${id}" not found in registry. Deploy it first with /bot-deploy.`,
+			};
+		}
+
+		// 2. Find the first skill that has a registered handler
+		const { skills } = spec;
+		if (!skills.length) {
+			return { ok: false, message: `Bot "${id}" has no skills configured.` };
+		}
+
+		const known = new Set(registeredSkillIds());
+		const skillId = skills.find((s) => known.has(s));
+		if (!skillId) {
+			return {
+				ok: false,
+				message: `No handler registered for any skill in bot "${id}" (skills: ${skills.join(", ")}).`,
+			};
+		}
+
+		// 3. Dispatch and return the result
+		const result = await dispatchSkill(skillId, message);
+		return { ok: result.ok, message: result.output };
 	}
 
 	/**

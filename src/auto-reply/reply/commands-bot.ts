@@ -58,7 +58,7 @@ function commandToAction(cmd: string): BotAction | null {
 	switch (cmd) {
 		case "deploy": case "stop": case "restart":
 		case "list": case "status": case "help": case "audit": case "draft":
-		case "draft-deploy": case "confirm": case "cancel":
+		case "draft-deploy": case "confirm": case "cancel": case "invoke":
 			return cmd as BotAction;
 		default:
 			// "unknown" commands still need at least viewer to see error/help

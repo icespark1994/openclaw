@@ -16,11 +16,11 @@ import { appendAuditEntry } from "./audit.js";
 export type BotRole = "owner" | "admin" | "viewer";
 
 /** Actions that map to parsed command types. */
-export type BotAction = "deploy" | "stop" | "restart" | "list" | "status" | "help" | "audit" | "draft" | "draft-deploy" | "confirm" | "cancel";
+export type BotAction = "deploy" | "stop" | "restart" | "list" | "status" | "help" | "audit" | "draft" | "draft-deploy" | "confirm" | "cancel" | "invoke";
 
 const ROLE_PERMISSIONS: Record<BotRole, Set<BotAction>> = {
-	owner: new Set(["deploy", "stop", "restart", "list", "status", "help", "audit", "draft", "draft-deploy", "confirm", "cancel"]),
-	admin: new Set(["stop", "restart", "list", "status", "help", "audit", "draft"]),
+	owner: new Set(["deploy", "stop", "restart", "list", "status", "help", "audit", "draft", "draft-deploy", "confirm", "cancel", "invoke"]),
+	admin: new Set(["stop", "restart", "list", "status", "help", "audit", "draft", "invoke"]),
 	viewer: new Set(["list", "status", "help", "audit"]),
 };
 

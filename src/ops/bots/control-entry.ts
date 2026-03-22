@@ -25,6 +25,7 @@ const HELP_TEXT = [
 	"  /bot-stop <id>         — stop a bot",
 	"  /bot-restart <id>      — restart a bot",
 	"  /bot-deploy <yaml>     — deploy a bot from inline YAML",
+	"  /bot-invoke <id> <msg> — invoke a bot's skill with a message",
 	"  /bot-audit [N|botId]   — show recent audit log",
 	"  /bot-draft <desc>      — generate a bot spec draft",
 	"  /bot-draft-deploy <desc> — draft + confirm flow",
@@ -40,6 +41,7 @@ type ParsedCommand =
 	| { cmd: "stop"; id: string }
 	| { cmd: "restart"; id: string }
 	| { cmd: "deploy"; yaml: string }
+	| { cmd: "invoke"; id: string; message: string; options?: Record<string, unknown> }
 	| { cmd: "audit"; arg?: string }
 	| { cmd: "draft"; text: string }
 	| { cmd: "draft-deploy"; text: string }
@@ -79,6 +81,18 @@ export function parseCommand(input: string): ParsedCommand {
 
 		case "/bot-deploy":
 			return rest ? { cmd: "deploy", yaml: rest } : { cmd: "unknown", input: trimmed };
+
+		case "/bot-invoke": {
+			if (!rest) return { cmd: "unknown", input: trimmed };
+			// Split into: <botId> <message...>
+			const invokeSpace = rest.indexOf(" ");
+			if (invokeSpace === -1) return { cmd: "unknown", input: trimmed };
+			const invokeId = rest.slice(0, invokeSpace).trim();
+			const invokeMessage = rest.slice(invokeSpace + 1).trim();
+			if (!invokeId || !invokeMessage) return { cmd: "unknown", input: trimmed };
+			// options field reserved for future use (e.g. --format json)
+			return { cmd: "invoke", id: invokeId, message: invokeMessage };
+		}
 
 		case "/bot-audit":
 			return { cmd: "audit", arg: rest ? rest.split(/\s/)[0] : undefined };
@@ -140,6 +154,10 @@ export async function handleBotCommand(
 			response = await service.deployFromYaml(parsed.yaml);
 			return response.message;
 
+		case "invoke":
+			response = await service.invokeBot(parsed.id, parsed.message);
+			return response.message;
+
 		case "draft": {
 			const draft = generateBotDraft(parsed.text);
 			return draft.message;
@@ -176,6 +194,7 @@ function missingArgMessage(input: string): string {
 	if (input.startsWith("/bot-stop")) return "Usage: /bot-stop <id>";
 	if (input.startsWith("/bot-restart")) return "Usage: /bot-restart <id>";
 	if (input.startsWith("/bot-deploy")) return "Usage: /bot-deploy <yaml>";
+	if (input.startsWith("/bot-invoke")) return "Usage: /bot-invoke <bot-id> <message>";
 	if (input.startsWith("/bot-draft-deploy")) return "Usage: /bot-draft-deploy <description>";
 	if (input.startsWith("/bot-draft")) return "Usage: /bot-draft <description>";
 	return `Unknown command: "${input}"\n${HELP_TEXT}`;
