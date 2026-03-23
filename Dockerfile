@@ -59,7 +59,7 @@ COPY --from=ext-deps --chown=node:node /out/ ./extensions/
 USER node
 # Reduce OOM risk on low-memory hosts during dependency installation.
 # Docker builds on small VMs may otherwise fail with "Killed" (exit 137).
-RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile
+RUN NODE_OPTIONS=--max-old-space-size=2048 pnpm install --frozen-lockfile --prod
 
 # Optionally install Chromium and Xvfb for browser automation.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_BROWSER=1 ...
@@ -120,10 +120,11 @@ RUN for dir in /app/extensions /app/.agent /app/.agents; do \
         find "$dir" -type f -exec chmod 644 {} +; \
       fi; \
     done
-RUN pnpm build
-# Force pnpm for UI build (Bun may fail on ARM/Synology architectures)
+# pnpm build and pnpm ui:build are intentionally NOT run here.
+# Build artifacts (dist/) must be produced locally before building this image.
+# Run: pnpm build && pnpm ui:build  (then: docker build ...)
+# Force pnpm for plugin install (Bun may fail on ARM/Synology architectures)
 ENV OPENCLAW_PREFER_PNPM=1
-RUN pnpm ui:build
 
 # Expose the CLI binary without requiring npm global writes as non-root.
 USER root

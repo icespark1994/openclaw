@@ -32,8 +32,10 @@ tmp
 **/tmp
 
 # build artifacts
-dist
+# Nested dist directories (extensions, ui source, etc.) are excluded.
+# Root dist/ is pre-built locally and must be included in the image.
 **/dist
+!dist
 apps/macos/.build
 apps/ios/build
 **/*.trace
