@@ -20,6 +20,7 @@ import type { OpenClawConfig, ReplyToMode, TelegramAccountConfig } from "../conf
 import { danger, logVerbose } from "../globals.js";
 import { getAgentScopedMediaLocalRoots } from "../media/local-roots.js";
 import { classifyMessage } from "../routing/classify-message.js";
+import { SKILL_HANDLERS } from "../routing/skill-handlers.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { TelegramMessageContext } from "./bot-message-context.js";
 import type { TelegramBotOptions } from "./bot.js";
@@ -465,6 +466,21 @@ export const dispatchTelegramMessage = async ({
     }
     return result.delivered;
   };
+
+  // Stage 10-B: skill dispatch — runs after sendPayload is available.
+  // Unknown targets fall through to the normal LLM chain.
+  const sendSkillReply = async (text: string) => {
+    await sendPayload({ text });
+  };
+  if (msgRoute.routeType === "skill" && msgRoute.target != null) {
+    const handler = SKILL_HANDLERS[msgRoute.target];
+    if (handler) {
+      const replyText = await handler(msgText);
+      await sendSkillReply(replyText);
+      return;
+    }
+  }
+
   const deliverLaneText = createLaneTextDeliverer({
     lanes,
     archivedAnswerPreviews,
