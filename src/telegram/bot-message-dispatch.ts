@@ -19,6 +19,7 @@ import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
 import type { OpenClawConfig, ReplyToMode, TelegramAccountConfig } from "../config/types.js";
 import { danger, logVerbose } from "../globals.js";
 import { getAgentScopedMediaLocalRoots } from "../media/local-roots.js";
+import { classifyMessage } from "../routing/classify-message.js";
 import type { RuntimeEnv } from "../runtime.js";
 import type { TelegramMessageContext } from "./bot-message-context.js";
 import type { TelegramBotOptions } from "./bot.js";
@@ -157,6 +158,14 @@ export const dispatchTelegramMessage = async ({
     removeAckAfterReply,
     statusReactionController,
   } = context;
+
+  // Stage 10-A: classify message into control / skill / chat.
+  // Result is logged for observability; no behavioral change in this stage.
+  const msgText = msg.text ?? msg.caption ?? "";
+  const msgRoute = classifyMessage(msgText, cfg);
+  logVerbose(
+    `[classify] routeType=${msgRoute.routeType} intent=${msgRoute.matchedIntent} target=${msgRoute.target ?? "-"} actionHint=${msgRoute.actionHint ?? "-"} risk=${msgRoute.riskLevel} confirm=${msgRoute.requiresConfirmation}`,
+  );
 
   const draftMaxChars = Math.min(textLimit, 4096);
   const tableMode = resolveMarkdownTableMode({
