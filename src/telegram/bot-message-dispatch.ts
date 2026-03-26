@@ -502,9 +502,16 @@ export const dispatchTelegramMessage = async ({
   // Stage 10-E: finance pending draft check.
   // Only intercepts YES/NO when a pending finance draft exists for this session;
   // otherwise falls through to Stage 10-C and the LLM chain unchanged.
+  // Stale drafts (> 30 min) are auto-cleared to prevent cross-request contamination.
+  const PENDING_FINANCE_TTL_MS = 30 * 60 * 1000;
   const pendingFinance = getPendingFinanceDraft(pendingKey);
   if (pendingFinance != null) {
-    if (isConfirmYes(msgText)) {
+    // Fix 10-F/2: staleness guard — discard abandoned drafts rather than re-prompting.
+    if (Date.now() - pendingFinance.createdAt > PENDING_FINANCE_TTL_MS) {
+      logVerbose(`[finance] stale pending draft auto-cleared sessionKey=${pendingKey}`);
+      clearPendingFinanceDraft(pendingKey);
+      // fall through to normal routing
+    } else if (isConfirmYes(msgText)) {
       logVerbose(`[finance] YES received sessionKey=${pendingKey}`);
       clearPendingFinanceDraft(pendingKey);
       try {
@@ -514,19 +521,31 @@ export const dispatchTelegramMessage = async ({
         await sendPayload({ text: `Failed to write expense: ${String(err)}` });
       }
       return;
-    }
-    if (isConfirmNo(msgText)) {
+    } else if (isConfirmNo(msgText)) {
       logVerbose(`[finance] NO received sessionKey=${pendingKey}`);
       clearPendingFinanceDraft(pendingKey);
       await sendPayload({ text: "Finance entry cancelled. No record was written." });
       return;
+    } else if (msgRoute.routeType === "skill" && msgRoute.target === "finance") {
+      // Fix 10-F/3: new finance request while a draft is pending — overwrite, don't re-prompt.
+      logVerbose(
+        `[finance] new finance request while pending — overwriting draft sessionKey=${pendingKey}`,
+      );
+      const handler = SKILL_HANDLERS["finance"];
+      if (handler) {
+        const skillCtx = { sessionKey: pendingKey, chatId, threadId: threadSpec?.id };
+        const replyText = await handler(msgText, skillCtx);
+        await sendSkillReply(replyText);
+        return;
+      }
+    } else {
+      // Unrecognized reply — re-prompt, hold state.
+      logVerbose(`[finance] unrecognized reply while pending sessionKey=${pendingKey}`);
+      await sendPayload({
+        text: 'Waiting for your confirmation on the expense draft. Reply "yes" or "confirm" to write to ledger, or "no" or "cancel" to abort.',
+      });
+      return;
     }
-    // Unrecognized reply — re-prompt, hold state.
-    logVerbose(`[finance] unrecognized reply while pending sessionKey=${pendingKey}`);
-    await sendPayload({
-      text: 'Waiting for your confirmation on the expense draft. Reply "yes" or "confirm" to write to ledger, or "no" or "cancel" to abort.',
-    });
-    return;
   }
 
   // Stage 10-C dispatch — runs after sendPayload is available.

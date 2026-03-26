@@ -92,9 +92,11 @@ const MEDIUM_CONTROL_PATTERNS: ReadonlyArray<{
   { re: /(?:^|\s)挂\s*skill|\battach[-\s]skill\b/i, actionHint: "attach-skill" },
 ];
 
-/** Patterns for finance skill. */
+/** Patterns for finance skill.
+ * Covers explicit finance keywords, common vendor names, expense action verbs,
+ * food/travel keywords, and bare dollar-amount signals (e.g. "uber $14.21"). */
 const FINANCE_PATTERNS =
-  /\bfinance\b|\bexpense\b|\breimbursement\b|\breceipt\b|\bbookkeeping\b|\btransaction\b|\b报销\b|\b收据\b|\b账单\b|\b记账\b/i;
+  /\bfinance\b|\bexpense\b|\breimbursement\b|\breceipt\b|\bbookkeeping\b|\btransaction\b|\binvoice\b|\bsubscription\b|\b报销\b|\b收据\b|\b账单\b|\b记账\b|\buber\b|\blyft\b|\btaxi\b|\brideshare\b|\bgrab\b|\bspent\b|\bpaid\b|\bbought\b|\bpurchased\b|\blunch\b|\bdinner\b|\bbreakfast\b|\bmeal\b|\bfood\b|\brestaurant\b|\$\d/i;
 
 /** Patterns for news skill. */
 const NEWS_PATTERNS = /\bnews brief\b|\bnews summary\b|\bdaily news\b|\b新闻摘要\b|\b每日新闻\b/i;
