@@ -20,8 +20,21 @@ import type { OpenClawConfig, ReplyToMode, TelegramAccountConfig } from "../conf
 import { danger, logVerbose } from "../globals.js";
 import { getAgentScopedMediaLocalRoots } from "../media/local-roots.js";
 import { classifyMessage } from "../routing/classify-message.js";
+import {
+  clearPendingConfirmation,
+  getPendingConfirmation,
+  isConfirmNo,
+  isConfirmYes,
+  makePendingKey,
+  setPendingConfirmation,
+} from "../routing/control-confirmation.js";
 import { SKILL_HANDLERS } from "../routing/skill-handlers.js";
 import type { RuntimeEnv } from "../runtime.js";
+import { commitFinanceDraft } from "../skills/finance/finance-handler.js";
+import {
+  clearPendingFinanceDraft,
+  getPendingFinanceDraft,
+} from "../skills/finance/pending-draft.js";
 import type { TelegramMessageContext } from "./bot-message-context.js";
 import type { TelegramBotOptions } from "./bot.js";
 import { deliverReplies } from "./bot/delivery.js";
@@ -160,9 +173,10 @@ export const dispatchTelegramMessage = async ({
     statusReactionController,
   } = context;
 
+  const msgText = msg.text ?? msg.caption ?? "";
+
   // Stage 10-A: classify message into control / skill / chat.
   // Result is logged for observability; no behavioral change in this stage.
-  const msgText = msg.text ?? msg.caption ?? "";
   const msgRoute = classifyMessage(msgText, cfg);
   logVerbose(
     `[classify] routeType=${msgRoute.routeType} intent=${msgRoute.matchedIntent} target=${msgRoute.target ?? "-"} actionHint=${msgRoute.actionHint ?? "-"} risk=${msgRoute.riskLevel} confirm=${msgRoute.requiresConfirmation}`,
@@ -467,6 +481,9 @@ export const dispatchTelegramMessage = async ({
     return result.delivered;
   };
 
+  // Shared session key — used by Stage 10-B (skill context), 10-C, and 10-E.
+  const pendingKey = makePendingKey(chatId, threadSpec);
+
   // Stage 10-B: skill dispatch — runs after sendPayload is available.
   // Unknown targets fall through to the normal LLM chain.
   const sendSkillReply = async (text: string) => {
@@ -475,10 +492,98 @@ export const dispatchTelegramMessage = async ({
   if (msgRoute.routeType === "skill" && msgRoute.target != null) {
     const handler = SKILL_HANDLERS[msgRoute.target];
     if (handler) {
-      const replyText = await handler(msgText);
+      const skillCtx = { sessionKey: pendingKey, chatId, threadId: threadSpec?.id };
+      const replyText = await handler(msgText, skillCtx);
       await sendSkillReply(replyText);
       return;
     }
+  }
+
+  // Stage 10-E: finance pending draft check.
+  // Only intercepts YES/NO when a pending finance draft exists for this session;
+  // otherwise falls through to Stage 10-C and the LLM chain unchanged.
+  const pendingFinance = getPendingFinanceDraft(pendingKey);
+  if (pendingFinance != null) {
+    if (isConfirmYes(msgText)) {
+      logVerbose(`[finance] YES received sessionKey=${pendingKey}`);
+      clearPendingFinanceDraft(pendingKey);
+      try {
+        const result = await commitFinanceDraft(pendingFinance.draft);
+        await sendPayload({ text: result });
+      } catch (err) {
+        await sendPayload({ text: `Failed to write expense: ${String(err)}` });
+      }
+      return;
+    }
+    if (isConfirmNo(msgText)) {
+      logVerbose(`[finance] NO received sessionKey=${pendingKey}`);
+      clearPendingFinanceDraft(pendingKey);
+      await sendPayload({ text: "Finance entry cancelled. No record was written." });
+      return;
+    }
+    // Unrecognized reply — re-prompt, hold state.
+    logVerbose(`[finance] unrecognized reply while pending sessionKey=${pendingKey}`);
+    await sendPayload({
+      text: 'Waiting for your confirmation on the expense draft. Reply "yes" or "confirm" to write to ledger, or "no" or "cancel" to abort.',
+    });
+    return;
+  }
+
+  // Stage 10-C dispatch — runs after sendPayload is available.
+  // Step 1: intercept YES/NO replies for any active pending confirmation.
+  const activePending = getPendingConfirmation(pendingKey);
+  if (activePending != null) {
+    if (isConfirmYes(msgText)) {
+      logVerbose(
+        `[confirm] YES received sessionKey=${pendingKey} intent=${activePending.matchedIntent} actionHint=${activePending.actionHint ?? "-"}`,
+      );
+      clearPendingConfirmation(pendingKey);
+      await sendPayload({
+        text: `Confirmed. [Stage 10-C placeholder] Action "${activePending.actionHint ?? activePending.matchedIntent}" will be wired in a future stage.`,
+      });
+      return;
+    }
+    if (isConfirmNo(msgText)) {
+      logVerbose(
+        `[confirm] NO received sessionKey=${pendingKey} intent=${activePending.matchedIntent}`,
+      );
+      clearPendingConfirmation(pendingKey);
+      await sendPayload({ text: "Cancelled. No action was taken." });
+      return;
+    }
+    // Unrecognized reply while pending — re-prompt and hold state.
+    logVerbose(
+      `[confirm] unrecognized reply while pending sessionKey=${pendingKey} text="${msgText.slice(0, 40)}"`,
+    );
+    await sendPayload({
+      text: `Waiting for your confirmation. Reply "yes" or "confirm" to proceed, or "no" or "cancel" to abort.`,
+    });
+    return;
+  }
+
+  // Step 2: if this is a new high-risk control requiring confirmation, store and prompt.
+  if (msgRoute.routeType === "control" && msgRoute.requiresConfirmation) {
+    const existingPending = getPendingConfirmation(pendingKey);
+    if (existingPending != null) {
+      // Should not reach here (handled above), but guard for safety.
+      logVerbose(`[confirm] duplicate pending guard hit sessionKey=${pendingKey}`);
+      await sendPayload({
+        text: `You already have a pending confirmation. Reply "yes"/"confirm" or "no"/"cancel" before sending a new action.`,
+      });
+      return;
+    }
+    setPendingConfirmation({
+      sessionKey: pendingKey,
+      originalText: msgText,
+      actionHint: msgRoute.actionHint,
+      matchedIntent: msgRoute.matchedIntent,
+      target: msgRoute.target,
+      createdAt: Date.now(),
+    });
+    await sendPayload({
+      text: `⚠️ This action requires confirmation (${msgRoute.actionHint ?? msgRoute.matchedIntent}). Reply "yes" or "confirm" to proceed, or "no" or "cancel" to abort.`,
+    });
+    return;
   }
 
   const deliverLaneText = createLaneTextDeliverer({
