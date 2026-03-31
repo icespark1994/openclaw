@@ -17,6 +17,7 @@ import { createTypingCallbacks } from "../channels/typing.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
 import type { OpenClawConfig, ReplyToMode, TelegramAccountConfig } from "../config/types.js";
+import { handleFinanceMessage } from "../finance/index.js";
 import { danger, logVerbose } from "../globals.js";
 import { getAgentScopedMediaLocalRoots } from "../media/local-roots.js";
 import { classifyMessage } from "../routing/classify-message.js";
@@ -30,11 +31,6 @@ import {
 } from "../routing/control-confirmation.js";
 import { SKILL_HANDLERS } from "../routing/skill-handlers.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { commitFinanceDraft } from "../skills/finance/finance-handler.js";
-import {
-  clearPendingFinanceDraft,
-  getPendingFinanceDraft,
-} from "../skills/finance/pending-draft.js";
 import type { TelegramMessageContext } from "./bot-message-context.js";
 import type { TelegramBotOptions } from "./bot.js";
 import { deliverReplies } from "./bot/delivery.js";
@@ -489,61 +485,28 @@ export const dispatchTelegramMessage = async ({
   const sendSkillReply = async (text: string) => {
     await sendPayload({ text });
   };
+
+  // Stage 11A: finance is handled entirely by handleFinanceMessage — single entry point.
+  // isNewFinanceRequest is computed here from msgRoute so finance-service stays decoupled
+  // from MessageRoute / SkillContext types.
+  const financeResult = await handleFinanceMessage(msgText, {
+    sessionKey: pendingKey,
+    botId: "control",
+    isNewFinanceRequest: msgRoute.routeType === "skill" && msgRoute.target === "finance",
+  });
+  if (financeResult.handled) {
+    await sendPayload({ text: financeResult.reply });
+    return;
+  }
+
+  // Stage 10-B: non-finance skill dispatch.
+  // Unknown targets fall through to the normal LLM chain.
   if (msgRoute.routeType === "skill" && msgRoute.target != null) {
     const handler = SKILL_HANDLERS[msgRoute.target];
     if (handler) {
       const skillCtx = { sessionKey: pendingKey, chatId, threadId: threadSpec?.id };
       const replyText = await handler(msgText, skillCtx);
       await sendSkillReply(replyText);
-      return;
-    }
-  }
-
-  // Stage 10-E: finance pending draft check.
-  // Only intercepts YES/NO when a pending finance draft exists for this session;
-  // otherwise falls through to Stage 10-C and the LLM chain unchanged.
-  // Stale drafts (> 30 min) are auto-cleared to prevent cross-request contamination.
-  const PENDING_FINANCE_TTL_MS = 30 * 60 * 1000;
-  const pendingFinance = getPendingFinanceDraft(pendingKey);
-  if (pendingFinance != null) {
-    // Fix 10-F/2: staleness guard — discard abandoned drafts rather than re-prompting.
-    if (Date.now() - pendingFinance.createdAt > PENDING_FINANCE_TTL_MS) {
-      logVerbose(`[finance] stale pending draft auto-cleared sessionKey=${pendingKey}`);
-      clearPendingFinanceDraft(pendingKey);
-      // fall through to normal routing
-    } else if (isConfirmYes(msgText)) {
-      logVerbose(`[finance] YES received sessionKey=${pendingKey}`);
-      clearPendingFinanceDraft(pendingKey);
-      try {
-        const result = await commitFinanceDraft(pendingFinance.draft);
-        await sendPayload({ text: result });
-      } catch (err) {
-        await sendPayload({ text: `Failed to write expense: ${String(err)}` });
-      }
-      return;
-    } else if (isConfirmNo(msgText)) {
-      logVerbose(`[finance] NO received sessionKey=${pendingKey}`);
-      clearPendingFinanceDraft(pendingKey);
-      await sendPayload({ text: "Finance entry cancelled. No record was written." });
-      return;
-    } else if (msgRoute.routeType === "skill" && msgRoute.target === "finance") {
-      // Fix 10-F/3: new finance request while a draft is pending — overwrite, don't re-prompt.
-      logVerbose(
-        `[finance] new finance request while pending — overwriting draft sessionKey=${pendingKey}`,
-      );
-      const handler = SKILL_HANDLERS["finance"];
-      if (handler) {
-        const skillCtx = { sessionKey: pendingKey, chatId, threadId: threadSpec?.id };
-        const replyText = await handler(msgText, skillCtx);
-        await sendSkillReply(replyText);
-        return;
-      }
-    } else {
-      // Unrecognized reply — re-prompt, hold state.
-      logVerbose(`[finance] unrecognized reply while pending sessionKey=${pendingKey}`);
-      await sendPayload({
-        text: 'Waiting for your confirmation on the expense draft. Reply "yes" or "confirm" to write to ledger, or "no" or "cancel" to abort.',
-      });
       return;
     }
   }
