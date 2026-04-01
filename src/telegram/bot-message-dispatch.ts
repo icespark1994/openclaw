@@ -17,9 +17,12 @@ import { createTypingCallbacks } from "../channels/typing.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { loadSessionStore, resolveStorePath } from "../config/sessions.js";
 import type { OpenClawConfig, ReplyToMode, TelegramAccountConfig } from "../config/types.js";
-import { handleFinanceMessage } from "../finance/index.js";
+// Side effect: registers finance-bot (and any future built-in in-process bots) before
+// the first message is dispatched.  Dispatch itself has no bot-specific logic.
+import "../finance/register-finance-bot.js";
 import { danger, logVerbose } from "../globals.js";
 import { getAgentScopedMediaLocalRoots } from "../media/local-roots.js";
+import { routeMessageToInProcessBots } from "../ops/bots/in-process-registry.js";
 import { classifyMessage } from "../routing/classify-message.js";
 import {
   clearPendingConfirmation,
@@ -486,16 +489,17 @@ export const dispatchTelegramMessage = async ({
     await sendPayload({ text });
   };
 
-  // Stage 11A: finance is handled entirely by handleFinanceMessage — single entry point.
-  // isNewFinanceRequest is computed here from msgRoute so finance-service stays decoupled
-  // from MessageRoute / SkillContext types.
-  const financeResult = await handleFinanceMessage(msgText, {
-    sessionKey: pendingKey,
-    botId: "control",
-    isNewFinanceRequest: msgRoute.routeType === "skill" && msgRoute.target === "finance",
-  });
-  if (financeResult.handled) {
-    await sendPayload({ text: financeResult.reply });
+  // Stage 11B: generic in-process bot routing.
+  // routeType + target are passed verbatim; each registered bot decides whether the
+  // message belongs to its domain.  No bot IDs here.
+  const inProcessReply = await routeMessageToInProcessBots(
+    msgText,
+    pendingKey,
+    msgRoute.routeType,
+    msgRoute.target ?? null,
+  );
+  if (inProcessReply !== null) {
+    await sendPayload({ text: inProcessReply });
     return;
   }
 
