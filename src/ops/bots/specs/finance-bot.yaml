@@ -1,0 +1,46 @@
+# Finance Bot — Stage 11C BotSpec
+#
+# Runs as an isolated docker container with its own Telegram token.
+# Users message @your_finance_bot directly; control-bot only manages lifecycle.
+#
+# Prerequisites before /bot-deploy:
+#   1. Create Telegram token file:
+#        echo "YOUR_TELEGRAM_BOT_TOKEN" > ~/.openclaw/bot-secrets/finance-bot.telegram-token
+#        chmod 600 ~/.openclaw/bot-secrets/finance-bot.telegram-token
+#   2. Place Google Sheets credentials:
+#        cp service-account.json ~/.openclaw/bot-secrets/google-credentials.json
+#        chmod 600 ~/.openclaw/bot-secrets/google-credentials.json
+#   3. Fill in GOOGLE_SPREADSHEET_ID below with your sheet's ID.
+#
+# Usage:
+#   Copy to ~/.openclaw/bots/finance-bot.yaml, then /bot-deploy in control channel.
+
+version: 1
+id: finance-bot
+name: Finance Bot
+description: Stateful expense capture — parse, confirm, write to Google Sheets.
+runtime: docker
+model:
+  id: anthropic/claude-haiku-4-5
+skills:
+  - finance/expense_v1
+telegram:
+  # Host-side path to the Telegram bot token file.
+  # Volume-mounted read-only into container at /home/node/.openclaw/secrets/finance-bot.telegram-token
+  tokenFile: ~/.openclaw/bot-secrets/finance-bot.telegram-token
+  # Telegram user IDs allowed to DM this bot (add your user IDs here)
+  allowFrom: []
+gatewayPort: 18790
+env:
+  # Identifies this process as finance-bot so the finance handler self-registers.
+  OPENCLAW_BOT_ID: finance-bot
+  # Google Sheets target (replace with your actual spreadsheet ID)
+  GOOGLE_SPREADSHEET_ID: ""
+  # Path to Google service account credentials inside the container.
+  # Mount the file from the host by adding a volume entry in docker-compose.override.yml:
+  #   services:
+  #     finance-bot:
+  #       volumes:
+  #         - ~/.openclaw/bot-secrets/google-credentials.json:/home/node/.openclaw/secrets/google-credentials.json:ro
+  GOOGLE_SHEETS_CREDENTIALS_FILE: /home/node/.openclaw/secrets/google-credentials.json
+enabled: true

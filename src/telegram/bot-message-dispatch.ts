@@ -489,9 +489,11 @@ export const dispatchTelegramMessage = async ({
     await sendPayload({ text });
   };
 
-  // Stage 11B: generic in-process bot routing.
-  // routeType + target are passed verbatim; each registered bot decides whether the
-  // message belongs to its domain.  No bot IDs here.
+  // Stage 11B/11C: generic in-process bot routing.
+  // In the finance-bot container (OPENCLAW_BOT_ID=finance-bot) finance-bot is
+  // registered and handles messages here.
+  // In the control-bot process (no OPENCLAW_BOT_ID) the registry is empty and
+  // this returns null immediately.
   const inProcessReply = await routeMessageToInProcessBots(
     msgText,
     pendingKey,
@@ -500,6 +502,15 @@ export const dispatchTelegramMessage = async ({
   );
   if (inProcessReply !== null) {
     await sendPayload({ text: inProcessReply });
+    return;
+  }
+
+  // Stage 11C: UX redirect — finance messages are no longer handled by control-bot.
+  // Users should send expense/reimbursement requests directly to @finance_bot.
+  if (msgRoute.routeType === "skill" && msgRoute.target === "finance") {
+    await sendPayload({
+      text: "请使用 @finance_bot 完成该操作。",
+    });
     return;
   }
 

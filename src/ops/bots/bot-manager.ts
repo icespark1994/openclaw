@@ -8,6 +8,8 @@
  * Stage 7D scope: orchestrator core.  No CLI, no control bot workflow.
  */
 
+import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { BotSpec } from "./bot-spec.js";
 import type { CommandResult, BotStatus, ExecutorOptions } from "./executor.js";
@@ -90,15 +92,38 @@ export class BotManager {
   /**
    * Deploy a bot: persist its spec, generate a plan, and start the container.
    *
-   * 1. Write spec to specDir/<id>.yaml
-   * 2. Generate LifecyclePlan
-   * 3. startBot(plan)
+   * 1. Validate prerequisites (token file exists for docker bots with telegram config)
+   * 2. Write spec to specDir/<id>.yaml
+   * 3. Generate LifecyclePlan
+   * 4. Write openclaw.json to configDir/<id>/ (docker bots only; skips if file already exists)
+   * 5. startBot(plan)
    */
   async deployBot(spec: BotSpec): Promise<DeployResult> {
+    // Validate Telegram token file exists before touching docker
+    if ((spec.runtime ?? "docker") === "docker" && spec.telegram?.tokenFile) {
+      const resolved = spec.telegram.tokenFile.replace(/^~(?=$|\/)/, os.homedir());
+      try {
+        await fs.access(resolved);
+      } catch {
+        throw new Error(
+          `Telegram token file not found: ${resolved}\n` +
+            `Create it before deploying:\n` +
+            `  echo "YOUR_BOT_TOKEN" > ${resolved}\n` +
+            `  chmod 600 ${resolved}`,
+        );
+      }
+    }
+
     const specPath = path.join(this.config.specDir, `${spec.id}.yaml`);
     await writeBotSpec(specPath, spec);
 
     const plan = planBotLifecycle(spec, this.config.planOptions);
+
+    // Write openclaw.json for docker-runtime bots (first deploy only; skips if file exists)
+    if (plan.runtime === "docker" && plan.botConfig !== null) {
+      await this.writeBotContainerConfig(spec.id, plan.botConfig);
+    }
+
     const startResult = await startBot(plan, this.config.executorOptions);
 
     return {
@@ -107,6 +132,31 @@ export class BotManager {
       plan,
       startResult,
     };
+  }
+
+  /**
+   * Write openclaw.json into the bot's config directory.
+   * Skips silently if the file already exists (preserves user customisations on re-deploy).
+   */
+  private async writeBotContainerConfig(
+    botId: string,
+    botConfig: NonNullable<import("./lifecycle-plan.js").LifecyclePlan["botConfig"]>,
+  ): Promise<void> {
+    const configDir = this.config.planOptions?.configDir;
+    if (!configDir) {
+      return;
+    }
+
+    const botConfigDir = path.join(configDir, botId);
+    await fs.mkdir(botConfigDir, { recursive: true });
+
+    const configPath = path.join(botConfigDir, "openclaw.json");
+    try {
+      await fs.access(configPath);
+      // File already exists — skip to preserve any user customisations
+    } catch {
+      await fs.writeFile(configPath, JSON.stringify(botConfig, null, 2), "utf-8");
+    }
   }
 
   /**
