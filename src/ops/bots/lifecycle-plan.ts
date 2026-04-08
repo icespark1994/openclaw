@@ -41,6 +41,18 @@ export type LifecyclePlan = {
    * null for in-process bots (they share the main process config).
    */
   botConfig: BotContainerConfig | null;
+  /**
+   * Path to an existing docker compose project directory.
+   * When present, stop/restart use --project-directory instead of a
+   * generated temporary compose file.  Mirrors spec.composeProjectDir.
+   */
+  composeProjectDir?: string;
+  /**
+   * Override for the Docker container name used by docker inspect.
+   * When present, overrides the default `openclaw-<id>` container name.
+   * Mirrors spec.containerName.
+   */
+  containerName?: string;
 };
 
 export type PlanOptions = GenerateComposeOptions;
@@ -61,5 +73,7 @@ export function planBotLifecycle(spec: BotSpec, options: PlanOptions = {}): Life
     env: generateEnv(spec, options),
     composeService: generateComposeService(spec, options),
     botConfig: runtime === "docker" ? generateBotConfig(spec) : null,
+    composeProjectDir: spec.composeProjectDir,
+    containerName: spec.containerName,
   };
 }
