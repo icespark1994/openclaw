@@ -60,6 +60,12 @@ function extractAmountAndCurrency(text: string): AmountResult {
     return { amount: wordAmount[1].replace(/,/g, ""), currency: "USD" };
   }
 
+  // ¥ symbol — treated as CNY in this bot's context
+  const yenSign = /¥\s*([\d,]+(?:\.\d+)?)/.exec(text);
+  if (yenSign) {
+    return { amount: yenSign[1].replace(/,/g, ""), currency: "CNY" };
+  }
+
   // CNY / RMB
   const cny = /([\d,]+(?:\.\d+)?)\s*(rmb|cny|yuan|元)\b/i.exec(text);
   if (cny) {
@@ -78,10 +84,10 @@ function extractAmountAndCurrency(text: string): AmountResult {
     return { amount: eur[1].replace(/,/g, ""), currency: "EUR" };
   }
 
-  // bare number as last resort (e.g. "花了 200")
+  // bare number as last resort (e.g. "花了 200") — default CNY for this bot
   const bareNum = /\b([\d,]+(?:\.\d+)?)\b/.exec(text);
   if (bareNum) {
-    return { amount: bareNum[1].replace(/,/g, ""), currency: "USD" };
+    return { amount: bareNum[1].replace(/,/g, ""), currency: "CNY" };
   }
 
   return { amount: "unknown", currency: "unknown" };

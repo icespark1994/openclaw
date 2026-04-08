@@ -14,6 +14,7 @@
  * (Editor role) before first use.
  */
 
+import fs from "node:fs";
 import { google } from "googleapis";
 
 // ---------------------------------------------------------------------------
@@ -29,9 +30,36 @@ function resolvePrivateKey(raw: string): string {
   return raw.replace(/\\n/g, "\n");
 }
 
+/**
+ * Load credentials from GOOGLE_SHEETS_CREDENTIALS_FILE (service account JSON)
+ * when GOOGLE_CLIENT_EMAIL / GOOGLE_PRIVATE_KEY env vars are not set directly.
+ */
+function loadCredsFromFile(): { clientEmail?: string; privateKey?: string } {
+  const credFile = process.env.GOOGLE_SHEETS_CREDENTIALS_FILE;
+  if (!credFile) {
+    return {};
+  }
+  try {
+    const raw = JSON.parse(fs.readFileSync(credFile, "utf8")) as {
+      client_email?: string;
+      private_key?: string;
+    };
+    return { clientEmail: raw.client_email, privateKey: raw.private_key };
+  } catch {
+    return {};
+  }
+}
+
 function buildAuth() {
-  const clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
-  const privateKeyRaw = process.env.GOOGLE_PRIVATE_KEY;
+  let clientEmail = process.env.GOOGLE_CLIENT_EMAIL;
+  let privateKeyRaw = process.env.GOOGLE_PRIVATE_KEY;
+
+  // Fallback: load from service account JSON file if env vars not set directly.
+  if (!clientEmail || !privateKeyRaw) {
+    const fileCreds = loadCredsFromFile();
+    clientEmail ??= fileCreds.clientEmail;
+    privateKeyRaw ??= fileCreds.privateKey;
+  }
 
   if (!clientEmail || !privateKeyRaw) {
     throw new Error(
@@ -47,7 +75,8 @@ function buildAuth() {
 }
 
 function getSheetId(): string {
-  const id = process.env.GOOGLE_SHEETS_ID;
+  // Support both GOOGLE_SHEETS_ID (code convention) and GOOGLE_SPREADSHEET_ID (BotSpec convention).
+  const id = process.env.GOOGLE_SHEETS_ID ?? process.env.GOOGLE_SPREADSHEET_ID;
   if (!id) {
     throw new Error("Google Sheets target missing: set GOOGLE_SHEETS_ID");
   }

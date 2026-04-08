@@ -94,9 +94,12 @@ const MEDIUM_CONTROL_PATTERNS: ReadonlyArray<{
 
 /** Patterns for finance skill.
  * Covers explicit finance keywords, common vendor names, expense action verbs,
- * food/travel keywords, and bare dollar-amount signals (e.g. "uber $14.21"). */
+ * food/travel keywords, and bare dollar-amount signals (e.g. "uber $14.21").
+ * Chinese: 花了/花费 (spent), 晚饭/午饭/早饭/吃饭/饭 (meal), 消费 (expenditure),
+ *          付款/付了 (paid), 买了/购买 (bought), 打车/滴滴 (taxi/rideshare),
+ *          出行 (travel), ¥<digit> (CNY amount). */
 const FINANCE_PATTERNS =
-  /\bfinance\b|\bexpense\b|\breimbursement\b|\breceipt\b|\bbookkeeping\b|\btransaction\b|\binvoice\b|\bsubscription\b|\b报销\b|\b收据\b|\b账单\b|\b记账\b|\buber\b|\blyft\b|\btaxi\b|\brideshare\b|\bgrab\b|\bspent\b|\bpaid\b|\bbought\b|\bpurchased\b|\blunch\b|\bdinner\b|\bbreakfast\b|\bmeal\b|\bfood\b|\brestaurant\b|\$\d/i;
+  /\bfinance\b|\bexpense\b|\breimbursement\b|\breceipt\b|\bbookkeeping\b|\btransaction\b|\binvoice\b|\bsubscription\b|\b报销\b|\b收据\b|\b账单\b|\b记账\b|\buber\b|\blyft\b|\btaxi\b|\brideshare\b|\bgrab\b|\bspent\b|\bpaid\b|\bbought\b|\bpurchased\b|\blunch\b|\bdinner\b|\bbreakfast\b|\bmeal\b|\bfood\b|\brestaurant\b|\$\d|花了|花费|晚饭|午饭|早饭|吃饭|消费|付款|付了|买了|购买|打车|滴滴|出行|¥\d/i;
 
 /** Patterns for news skill. */
 const NEWS_PATTERNS = /\bnews brief\b|\bnews summary\b|\bdaily news\b|\b新闻摘要\b|\b每日新闻\b/i;
