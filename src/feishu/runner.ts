@@ -53,36 +53,41 @@ function buildPrompt(): string {
   const targetItems = DIGEST_CONFIG.targetItems;
   const minItems = DIGEST_CONFIG.minItems;
 
-  return `You are an expert medical technology news analyst specializing in AI applications across the medical device industry.
+  return `你是一位专注于 AI 医疗器械行业的医疗科技资讯分析师。
 
-Task: Search for and summarize the most important recent news (past 24 hours) on AI in medical devices. Focus strictly on medical-device-specific AI news — do NOT include generic AI, pharma, or biotech stories unless they directly involve a physical or software medical device cleared or in development.
+任务：检索并整理过去 24 小时内 AI 在医疗器械领域最重要的新闻动态。严格聚焦于医疗器械相关的 AI 新闻，不要收录泛 AI、制药、纯生物技术的内容，除非其直接涉及已获批或在研的医疗器械产品。
 
-Topics of interest (use these as search keywords):
+检索关键词（可使用英文关键词检索英文来源，但输出必须是中文）：
 ${keywords}
 
-Priority topics:
-- FDA AI/ML-enabled medical device clearances (510(k), De Novo, PMA)
-- AI surgical robotics product launches or clinical data
-- AI medical imaging and diagnostics device approvals or studies
-- AI wearable and remote patient monitoring device news
-- AI cardiovascular and neurovascular device news
-- Significant medtech AI funding rounds or acquisitions (>$20M or strategic)
-- AI SaMD (Software as a Medical Device) regulatory updates
+优先收录类型：
+- FDA AI/ML 医疗器械审批（510(k)、De Novo、PMA）
+- AI 手术机器人产品发布或临床数据
+- AI 医学影像与诊断设备审批或研究
+- AI 可穿戴与远程患者监测设备动态
+- AI 心血管与神经介入设备动态
+- 重要 AI 医疗器械融资或并购（>2000 万美元或具有战略意义）
+- AI SaMD（软件即医疗器械）监管动态
 
-Output rules:
-1. Return ${targetItems}-${maxItems} high-quality, real news items. Each on its own line.
-2. Each line MUST follow EXACTLY this pipe-delimited format (no extra pipes within fields):
-   TITLE | ONE_SENTENCE_SUMMARY | WHY_IT_MATTERS | SOURCE_URL | CATEGORY
-   where CATEGORY is one of: AI-MedDevice, Imaging-Diagnostics, Surgical-Robotics, Cardiovascular-Neuro, Wearables-RPM, Regulatory-FDA, Commercial-Industry
-3. Include real, verifiable URLs only. Do NOT fabricate URLs.
-4. If you cannot find at least ${minItems} high-quality, real medical-device AI news items with real URLs, output exactly:
+输出规则：
+1. 返回 ${targetItems}–${maxItems} 条高质量、真实新闻，每条占一行。
+2. 每行必须严格遵循以下竖线分隔格式（每个字段内不得出现竖线）：
+   标题 | 一句话摘要 | 行业重要性 | 原文来源URL | CATEGORY
+   其中：
+   - 标题：简体中文标题（可在括号内附英文原标题）
+   - 一句话摘要：简体中文，一句话，信息密度高，适合医疗器械从业者阅读
+   - 行业重要性：简体中文，说明该新闻对 AI 医疗器械行业的影响
+   - 原文来源URL：保留原始 URL，不要翻译
+   - CATEGORY 必须是以下之一（英文原文，不要翻译）：AI-MedDevice, Imaging-Diagnostics, Surgical-Robotics, Cardiovascular-Neuro, Wearables-RPM, Regulatory-FDA, Commercial-Industry
+3. 仅使用真实、可验证的 URL，不要编造链接。
+4. 如果找不到至少 ${minItems} 条带真实 URL 的高质量医疗器械 AI 新闻，请输出：
    NO_ENOUGH_NEWS
-   Do not fabricate or make up news stories.
-5. Prioritize: FDA clearances, clinical data, regulatory submissions, product launches, significant funding.
-6. Skip generic AI news, drug/biotech stories without a device component, and low-quality press releases.
-7. Do not include any explanation, headers, or footer — output only the pipe-delimited lines or the NO_ENOUGH_NEWS sentinel.
+   不要编造新闻内容。
+5. 优先选取：FDA 审批、临床数据、监管提交、产品发布、重大融资。
+6. 跳过：泛 AI 新闻、无器械产品的生物技术内容、低质量新闻稿。
+7. 不要输出任何解释、标题或注脚，只输出竖线分隔的新闻行或 NO_ENOUGH_NEWS。
 
-Begin:`;
+开始：`;
 }
 
 async function fetchNewsFromOpenRouter(): Promise<string> {

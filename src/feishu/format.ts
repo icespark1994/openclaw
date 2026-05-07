@@ -26,13 +26,24 @@ const CATEGORY_EMOJI: Record<NewsCategory, string> = {
   "Commercial-Industry": "💼",
 };
 
+const CATEGORY_LABEL_ZH: Record<NewsCategory, string> = {
+  "AI-MedDevice": "AI 医疗器械",
+  "Imaging-Diagnostics": "影像与诊断",
+  "Surgical-Robotics": "手术机器人",
+  "Cardiovascular-Neuro": "心血管与神经",
+  "Wearables-RPM": "可穿戴与远程监测",
+  "Regulatory-FDA": "监管与审批",
+  "Commercial-Industry": "商业与产业动态",
+};
+
 /**
  * Format a single news item as a text block.
  */
 function formatItem(item: NewsItem, index: number): string {
   const emoji = CATEGORY_EMOJI[item.category] ?? "📰";
+  const label = CATEGORY_LABEL_ZH[item.category] ?? item.category;
   const lines = [
-    `${index}. ${emoji} [${item.category}] ${item.title}`,
+    `${index}. ${emoji} 【${label}】${item.title}`,
     `   摘要：${item.summary}`,
     `   重要性：${item.whyItMatters}`,
     `   来源：${item.url}`,
