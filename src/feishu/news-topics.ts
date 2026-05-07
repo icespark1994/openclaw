@@ -96,10 +96,14 @@ export const DIGEST_CONFIG = {
   targetItems: 10,
   /** Maximum items — truncate if LLM returns more. */
   maxItems: 12,
-  /** Minimum before declaring "no enough quality news today". */
+  /** Minimum items before declaring fallback. */
   minItems: 3,
-  /** How far back to look (days). */
-  lookbackDays: 1,
+  /** Primary search window (hours). Try this first. */
+  primaryLookbackDays: 1,
+  /** First fallback window if primary yields < minItems. */
+  fallbackLookbackDays: 3,
+  /** Extended window if fallback still yields < minItems. */
+  extendedLookbackDays: 7,
 } as const;
 
 /** Flat list of all keywords, used for prompt construction. */

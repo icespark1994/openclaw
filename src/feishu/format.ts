@@ -56,13 +56,17 @@ function formatItem(item: NewsItem, index: number): string {
  */
 export function formatDigest(items: NewsItem[], dateLabel: string): string {
   const header = [
-    `📋 AI 医疗器械行业 · 每日资讯`,
+    `📋 AI 医疗器械行业 · 近期资讯`,
     `📅 ${dateLabel}`,
     `─────────────────────────`,
   ].join("\n");
 
   if (items.length === 0) {
-    return [header, "", "今日无足够高质量更新，请明日再看。"].join("\n");
+    return [
+      header,
+      "",
+      "过去 7 天内未检索到足够高质量、带可靠来源的 AI 医疗器械行业更新。明日将继续追踪。",
+    ].join("\n");
   }
 
   const body = items.map((item, i) => formatItem(item, i + 1)).join("\n\n");
