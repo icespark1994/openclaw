@@ -17,9 +17,13 @@ export type NewsItem = {
 };
 
 const CATEGORY_EMOJI: Record<NewsCategory, string> = {
-  AI: "🤖",
-  Neurointervention: "🧠",
-  "AI+MedDevice": "⚕️",
+  "AI-MedDevice": "🤖",
+  "Imaging-Diagnostics": "🔬",
+  "Surgical-Robotics": "🦾",
+  "Cardiovascular-Neuro": "🫀",
+  "Wearables-RPM": "📡",
+  "Regulatory-FDA": "📋",
+  "Commercial-Industry": "💼",
 };
 
 /**
@@ -41,7 +45,7 @@ function formatItem(item: NewsItem, index: number): string {
  */
 export function formatDigest(items: NewsItem[], dateLabel: string): string {
   const header = [
-    `📋 AI & 神经介入医疗器械 · 每日资讯`,
+    `📋 AI 医疗器械行业 · 每日资讯`,
     `📅 ${dateLabel}`,
     `─────────────────────────`,
   ].join("\n");
@@ -91,13 +95,49 @@ export function parseLLMOutput(raw: string): NewsItem[] {
       continue;
     }
 
-    // Normalise category
-    let category: NewsCategory = "AI";
-    const cat = (rawCategory ?? "").toLowerCase();
-    if (cat.includes("neuro") || cat.includes("stroke") || cat.includes("neuro")) {
-      category = "Neurointervention";
-    } else if (cat.includes("ai+") || cat.includes("ai med") || cat.includes("device")) {
-      category = "AI+MedDevice";
+    // Normalise category — map LLM output to one of our seven NewsCategory values
+    let category: NewsCategory = "AI-MedDevice";
+    const cat = (rawCategory ?? "").toLowerCase().replace(/[\s_]/g, "-");
+    if (
+      cat.includes("imaging") ||
+      cat.includes("diagnostic") ||
+      cat.includes("radiology") ||
+      cat.includes("pathology")
+    ) {
+      category = "Imaging-Diagnostics";
+    } else if (cat.includes("surgical") || cat.includes("robot") || cat.includes("surgery")) {
+      category = "Surgical-Robotics";
+    } else if (
+      cat.includes("cardio") ||
+      cat.includes("neuro") ||
+      cat.includes("stroke") ||
+      cat.includes("cardiac")
+    ) {
+      category = "Cardiovascular-Neuro";
+    } else if (
+      cat.includes("wearable") ||
+      cat.includes("rpm") ||
+      cat.includes("remote") ||
+      cat.includes("monitor") ||
+      cat.includes("glucose")
+    ) {
+      category = "Wearables-RPM";
+    } else if (
+      cat.includes("regulat") ||
+      cat.includes("fda") ||
+      cat.includes("510k") ||
+      cat.includes("clearance") ||
+      cat.includes("ce-mark")
+    ) {
+      category = "Regulatory-FDA";
+    } else if (
+      cat.includes("commercial") ||
+      cat.includes("industry") ||
+      cat.includes("funding") ||
+      cat.includes("launch") ||
+      cat.includes("acquisition")
+    ) {
+      category = "Commercial-Industry";
     }
 
     items.push({

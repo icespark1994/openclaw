@@ -1,55 +1,93 @@
 /**
- * News topic configuration for AI-medtech daily digest.
+ * News topic configuration for AI medical device industry daily digest.
  *
- * Organised into three categories that map to the output tag field.
- * Keywords are used in the OpenRouter prompt — expand freely without
- * touching runner.ts.
+ * Seven broad categories covering AI applications across the full medical
+ * device industry. Keywords are used in the OpenRouter prompt — expand
+ * freely without touching runner.ts.
  */
 
-export type NewsCategory = "AI" | "Neurointervention" | "AI+MedDevice";
+export type NewsCategory =
+  | "AI-MedDevice"
+  | "Imaging-Diagnostics"
+  | "Surgical-Robotics"
+  | "Cardiovascular-Neuro"
+  | "Wearables-RPM"
+  | "Regulatory-FDA"
+  | "Commercial-Industry";
 
 export const NEWS_TOPIC_KEYWORDS: Record<NewsCategory, string[]> = {
-  AI: [
-    "AI healthcare",
-    "medical AI",
-    "healthcare AI regulation",
-    "LLM clinical",
-    "AI agent medical",
-    "AI hospital",
-    "clinical decision support AI",
-    "FDA AI medical device",
-    "artificial intelligence drug discovery",
-    "AI diagnostics",
-    "AI radiology",
-    "large language model healthcare",
+  "AI-MedDevice": [
+    "AI medical device",
+    "AI-powered medical device",
+    "machine learning medical device",
+    "AI SaMD software as medical device",
+    "AI clinical decision support",
+    "AI hospital connected device",
+    "AI digital health device",
+    "AI in medtech",
   ],
-  Neurointervention: [
-    "neurointervention",
-    "neurovascular device",
-    "stroke thrombectomy",
-    "aneurysm coil",
-    "flow diverter",
-    "stent retriever",
-    "aspiration catheter",
-    "intracranial stent",
-    "neurovascular FDA clearance",
-    "mechanical thrombectomy",
-    "Pipeline embolization",
-    "Woven EndoBridge",
-    "Penumbra thrombectomy",
-    "Medtronic neurovascular",
-    "Stryker neurovascular",
+  "Imaging-Diagnostics": [
+    "AI medical imaging",
+    "AI radiology device",
+    "AI pathology device",
+    "AI dermatology screening device",
+    "AI ophthalmology device",
+    "AI cancer screening device",
+    "AI endoscopy device",
+    "AI colonoscopy detection",
+    "AI mammography",
+    "AI CT MRI analysis device",
   ],
-  "AI+MedDevice": [
-    "AI medical device FDA",
-    "AI neurovascular",
-    "510k AI",
-    "de novo AI medical",
-    "AI-powered catheter",
-    "machine learning neurovascular",
-    "AI stroke detection",
-    "computational neurovascular",
-    "digital pathology AI FDA",
+  "Surgical-Robotics": [
+    "AI surgical robot",
+    "AI robotic surgery",
+    "autonomous surgery AI device",
+    "AI-guided surgical system",
+    "AI orthopedic robot",
+    "AI laparoscopic robot",
+    "AI spine surgery robot",
+    "AI surgical planning device",
+  ],
+  "Cardiovascular-Neuro": [
+    "AI cardiovascular device",
+    "AI heart failure monitoring device",
+    "AI cardiac monitoring",
+    "AI ECG device",
+    "AI stroke detection device",
+    "AI neurovascular device",
+    "AI neurointervention",
+    "AI stroke thrombectomy",
+    "AI aneurysm detection",
+    "AI atrial fibrillation device",
+  ],
+  "Wearables-RPM": [
+    "AI wearable medical device",
+    "AI remote patient monitoring device",
+    "AI continuous glucose monitor",
+    "AI insulin pump",
+    "AI implantable device",
+    "AI digital biomarker device",
+    "AI biosensor medical",
+    "AI patch monitor",
+  ],
+  "Regulatory-FDA": [
+    "FDA AI medical device clearance",
+    "FDA 510k AI approval",
+    "FDA De Novo AI device",
+    "CE mark AI medical device",
+    "FDA AI/ML-enabled device",
+    "AI device regulatory submission",
+    "FDA predetermined change control plan",
+    "FDA digital health center excellence",
+  ],
+  "Commercial-Industry": [
+    "medtech AI funding round",
+    "AI medical device acquisition",
+    "AI medical device product launch",
+    "medtech AI partnership",
+    "AI medical device FDA cleared commercial",
+    "AI hospital technology deal",
+    "medtech AI startup investment",
   ],
 };
 

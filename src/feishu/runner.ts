@@ -53,22 +53,33 @@ function buildPrompt(): string {
   const targetItems = DIGEST_CONFIG.targetItems;
   const minItems = DIGEST_CONFIG.minItems;
 
-  return `You are an expert medical technology news analyst specializing in AI in healthcare and neurovascular/neurointervention devices.
+  return `You are an expert medical technology news analyst specializing in AI applications across the medical device industry.
 
-Task: Search for and summarize today's most important news (past 24 hours) on the following topics:
+Task: Search for and summarize the most important recent news (past 24 hours) on AI in medical devices. Focus strictly on medical-device-specific AI news — do NOT include generic AI, pharma, or biotech stories unless they directly involve a physical or software medical device cleared or in development.
+
+Topics of interest (use these as search keywords):
 ${keywords}
+
+Priority topics:
+- FDA AI/ML-enabled medical device clearances (510(k), De Novo, PMA)
+- AI surgical robotics product launches or clinical data
+- AI medical imaging and diagnostics device approvals or studies
+- AI wearable and remote patient monitoring device news
+- AI cardiovascular and neurovascular device news
+- Significant medtech AI funding rounds or acquisitions (>$20M or strategic)
+- AI SaMD (Software as a Medical Device) regulatory updates
 
 Output rules:
 1. Return ${targetItems}-${maxItems} high-quality, real news items. Each on its own line.
 2. Each line MUST follow EXACTLY this pipe-delimited format (no extra pipes within fields):
    TITLE | ONE_SENTENCE_SUMMARY | WHY_IT_MATTERS | SOURCE_URL | CATEGORY
-   where CATEGORY is one of: AI, Neurointervention, AI+MedDevice
+   where CATEGORY is one of: AI-MedDevice, Imaging-Diagnostics, Surgical-Robotics, Cardiovascular-Neuro, Wearables-RPM, Regulatory-FDA, Commercial-Industry
 3. Include real, verifiable URLs only. Do NOT fabricate URLs.
-4. If you cannot find at least ${minItems} high-quality, real news items with real URLs, output exactly:
+4. If you cannot find at least ${minItems} high-quality, real medical-device AI news items with real URLs, output exactly:
    NO_ENOUGH_NEWS
    Do not fabricate or make up news stories.
-5. Prioritize: FDA clearances, clinical trials, regulatory updates, product launches, significant research.
-6. Skip duplicates and low-quality content (press release fluff with no substance).
+5. Prioritize: FDA clearances, clinical data, regulatory submissions, product launches, significant funding.
+6. Skip generic AI news, drug/biotech stories without a device component, and low-quality press releases.
 7. Do not include any explanation, headers, or footer — output only the pipe-delimited lines or the NO_ENOUGH_NEWS sentinel.
 
 Begin:`;
