@@ -103,10 +103,33 @@ export function createTelegramBot(opts: TelegramBotOptions) {
   // grammY's ApiClientOptions types still track `node-fetch` types; Node 22+ global fetch
   // (undici) is structurally compatible at runtime but not assignable in TS.
   const fetchForClient = fetchImpl as unknown as NonNullable<ApiClientOptions["fetch"]>;
-  const timeoutSeconds =
+  // grammY defaults to 500 s per-request timeout. On a VPS with NAT/firewall that silently
+  // drops idle TCP connections, the polling getUpdates call hangs on the dead socket until
+  // grammY's timer fires — causing multi-minute first-response delays.
+  //
+  // The runner long-poll uses timeout:20 (monitor.ts). Empty polls take ~20 s + RTT.
+  // Any timeoutSeconds ≥ 30 s is safe (10 s buffer above the 20 s long-poll).
+  // Configured values below 30 s race with the long-poll and accumulate exponential backoff.
+  //
+  // MIN = 30 s (10 s above the 20 s long-poll)
+  // DEFAULT = 45 s (25 s buffer; replaces grammY's 500 s default)
+  const TELEGRAM_POLL_TIMEOUT_SECONDS = 20; // must match monitor.ts runner.fetch.timeout
+  const MIN_SAFE_TIMEOUT_SECONDS = TELEGRAM_POLL_TIMEOUT_SECONDS + 10; // 30 s
+  const DEFAULT_TELEGRAM_TIMEOUT_SECONDS = TELEGRAM_POLL_TIMEOUT_SECONDS + 25; // 45 s
+  const rawTimeoutSeconds =
     typeof telegramCfg?.timeoutSeconds === "number" && Number.isFinite(telegramCfg.timeoutSeconds)
       ? Math.max(1, Math.floor(telegramCfg.timeoutSeconds))
-      : undefined;
+      : DEFAULT_TELEGRAM_TIMEOUT_SECONDS;
+  const timeoutSeconds = Math.max(rawTimeoutSeconds, MIN_SAFE_TIMEOUT_SECONDS);
+  const botLog = createSubsystemLogger("telegram/bot-init");
+  if (rawTimeoutSeconds < MIN_SAFE_TIMEOUT_SECONDS) {
+    botLog.warn(
+      `timeoutSeconds=${rawTimeoutSeconds} < min safe ${MIN_SAFE_TIMEOUT_SECONDS}; clamped to ${timeoutSeconds}`,
+    );
+  }
+  botLog.info(
+    `grammY timeoutSeconds=${timeoutSeconds} (poll=${TELEGRAM_POLL_TIMEOUT_SECONDS}s + buffer)`,
+  );
   const client: ApiClientOptions | undefined =
     shouldProvideFetch || timeoutSeconds
       ? {

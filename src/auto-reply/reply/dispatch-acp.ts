@@ -79,6 +79,18 @@ export function shouldBypassAcpDispatchForCommand(
   }
 
   const normalized = candidate.trim();
+
+  // /bot-* commands must be handled by the local command handler (handleBotCommands),
+  // not forwarded to the ACP agent. Without this bypass, ACP intercepts /bot-list etc.
+  // before getReplyFromConfig is ever called, so handleBotCommands never runs.
+  if (normalized.startsWith("/bot-")) {
+    // BOTLIST_TRACE_V1 point-f: /bot-* bypass inside shouldBypassAcpDispatchForCommand
+    logVerbose(
+      `BOTLIST_TRACE_V1 [f] shouldBypassAcpDispatchForCommand: /bot-* bypass hit cmd="${normalized.slice(0, 40)}" allowTextCommands=${allowTextCommands}`,
+    );
+    return allowTextCommands;
+  }
+
   if (!normalized.startsWith("!")) {
     return false;
   }

@@ -153,6 +153,10 @@ export const dispatchTelegramMessage = async ({
   telegramCfg,
   opts,
 }: DispatchTelegramMessageParams) => {
+  // Timing: record when the message enters dispatch so we can log the full
+  // receive→reply latency at the end of the handler.
+  const dispatchStartMs = Date.now();
+
   const {
     ctxPayload,
     msg,
@@ -173,6 +177,17 @@ export const dispatchTelegramMessage = async ({
   } = context;
 
   const msgText = msg.text ?? msg.caption ?? "";
+  // Timing: log when the message enters the handler so polling latency
+  // (Telegram message_date vs dispatchStartMs) can be measured in logs.
+  logVerbose(
+    `[timing] dispatch_start chat=${chatId} msg_id=${msg.message_id} msg_date=${msg.date} dispatch_ms=${dispatchStartMs}`,
+  );
+  // BOTLIST_TRACE_V1 point-a+c: dispatchTelegramMessage entry, raw text received
+  if (msgText.trim().startsWith("/bot-")) {
+    logVerbose(
+      `BOTLIST_TRACE_V1 [a+c] dispatchTelegramMessage entry text="${msgText.trim().slice(0, 60)}" chat=${chatId}`,
+    );
+  }
 
   // Stage 10-A: classify message into control / skill / chat.
   // Result is logged for observability; no behavioral change in this stage.
@@ -180,6 +195,12 @@ export const dispatchTelegramMessage = async ({
   logVerbose(
     `[classify] routeType=${msgRoute.routeType} intent=${msgRoute.matchedIntent} target=${msgRoute.target ?? "-"} actionHint=${msgRoute.actionHint ?? "-"} risk=${msgRoute.riskLevel} confirm=${msgRoute.requiresConfirmation}`,
   );
+  // BOTLIST_TRACE_V1 point-b: after classifyMessage
+  if (msgText.trim().startsWith("/bot-")) {
+    logVerbose(
+      `BOTLIST_TRACE_V1 [b] classifyMessage result routeType=${msgRoute.routeType} intent=${msgRoute.matchedIntent} requiresConfirm=${msgRoute.requiresConfirmation}`,
+    );
+  }
 
   const draftMaxChars = Math.min(textLimit, 4096);
   const tableMode = resolveMarkdownTableMode({
@@ -494,12 +515,24 @@ export const dispatchTelegramMessage = async ({
   // registered and handles messages here.
   // In the control-bot process (no OPENCLAW_BOT_ID) the registry is empty and
   // this returns null immediately.
+  // BOTLIST_TRACE_V1 point-d: before routeMessageToInProcessBots
+  if (msgText.trim().startsWith("/bot-")) {
+    logVerbose(
+      `BOTLIST_TRACE_V1 [d-before] routeMessageToInProcessBots routeType=${msgRoute.routeType} target=${msgRoute.target ?? "null"}`,
+    );
+  }
   const inProcessReply = await routeMessageToInProcessBots(
     msgText,
     pendingKey,
     msgRoute.routeType,
     msgRoute.target ?? null,
   );
+  // BOTLIST_TRACE_V1 point-d: after routeMessageToInProcessBots
+  if (msgText.trim().startsWith("/bot-")) {
+    logVerbose(
+      `BOTLIST_TRACE_V1 [d-after] routeMessageToInProcessBots result=${inProcessReply === null ? "null" : "handled"}`,
+    );
+  }
   if (inProcessReply !== null) {
     await sendPayload({ text: inProcessReply });
     return;
@@ -630,6 +663,12 @@ export const dispatchTelegramMessage = async ({
     },
   });
 
+  // BOTLIST_TRACE_V1 point-k-pre: entering LLM/ACP dispatch pipeline
+  if (msgText.trim().startsWith("/bot-")) {
+    logVerbose(
+      `BOTLIST_TRACE_V1 [k-pre] entering dispatchReplyWithBufferedBlockDispatcher for /bot- cmd`,
+    );
+  }
   try {
     ({ queuedFinal } = await dispatchReplyWithBufferedBlockDispatcher({
       ctx: ctxPayload,
@@ -917,4 +956,7 @@ export const dispatchTelegramMessage = async ({
     });
   }
   clearGroupHistory();
+  logVerbose(
+    `[timing] dispatch_end chat=${chatId} msg_id=${msg.message_id} total_ms=${Date.now() - dispatchStartMs}`,
+  );
 };

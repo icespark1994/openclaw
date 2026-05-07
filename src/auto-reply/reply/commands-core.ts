@@ -11,6 +11,7 @@ import { resolveBoundAcpThreadSessionKey } from "./commands-acp/targets.js";
 import { handleAllowlistCommand } from "./commands-allowlist.js";
 import { handleApproveCommand } from "./commands-approve.js";
 import { handleBashCommand } from "./commands-bash.js";
+import { handleBotCommands } from "./commands-bot.js";
 import { handleCompactCommand } from "./commands-compact.js";
 import { handleConfigCommand, handleDebugCommand } from "./commands-config.js";
 import {
@@ -172,6 +173,8 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
     HANDLERS = [
       // Plugin commands are processed first, before built-in commands
       handlePluginCommand,
+      // Bot orchestrator commands (/bot-list, /bot-status, /bot-restart, etc.)
+      handleBotCommands,
       handleBashCommand,
       handleActivationCommand,
       handleSendPolicyCommand,
@@ -294,6 +297,14 @@ export async function handleCommands(params: HandleCommandsParams): Promise<Comm
     surface: params.command.surface,
     commandSource: params.ctx.CommandSource,
   });
+
+  const _cmdBody = params.command.commandBodyNormalized ?? "";
+  if (_cmdBody.startsWith("/bot-")) {
+    // BOTLIST_TRACE_V1 point-i: handleCommands entry
+    logVerbose(
+      `BOTLIST_TRACE_V1 [i] handleCommands entry cmd="${_cmdBody.slice(0, 60)}" allowText=${allowTextCommands} authorized=${params.command.isAuthorizedSender}`,
+    );
+  }
 
   for (const handler of HANDLERS) {
     const result = await handler(params, allowTextCommands);

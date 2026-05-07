@@ -89,10 +89,19 @@ function applyTelegramNetworkWorkarounds(network?: TelegramNetworkConfig): void 
               autoSelectFamily: autoSelectDecision.value,
               autoSelectFamilyAttemptTimeout: 300,
             },
+            // Telegram long-poll holds connections for up to 30 seconds. The default
+            // undici headersTimeout is 300 s (5 min), which causes a ~5-minute silent
+            // stall when a NAT/firewall drops a keep-alive TCP connection without RST.
+            // 45 s gives 15 s of buffer above the 30 s long-poll while still detecting
+            // dead connections quickly enough to keep first-response latency under ~1 min.
+            headersTimeout: 45_000,
+            bodyTimeout: 45_000,
           }),
         );
         appliedGlobalDispatcherAutoSelectFamily = autoSelectDecision.value;
-        log.info(`global undici dispatcher autoSelectFamily=${autoSelectDecision.value}`);
+        log.info(
+          `global undici dispatcher autoSelectFamily=${autoSelectDecision.value} headersTimeout=45s`,
+        );
       } catch {
         // ignore if setGlobalDispatcher is unavailable
       }

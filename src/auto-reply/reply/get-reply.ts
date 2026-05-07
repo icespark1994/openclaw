@@ -60,6 +60,17 @@ export async function getReplyFromConfig(
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
   const isFastTestEnv = process.env.OPENCLAW_TEST_FAST === "1";
   const cfg = configOverride ?? loadConfig();
+  // BOTLIST_TRACE_V1 point-h: getReplyFromConfig entry
+  const _grc_raw =
+    (ctx as Record<string, unknown>).CommandBody ?? (ctx as Record<string, unknown>).RawBody ?? "";
+  const _grc_cmd = (typeof _grc_raw === "string" ? _grc_raw : "").trim().slice(0, 60);
+  if (_grc_cmd.startsWith("/bot-")) {
+    const _grc_sk = (ctx as Record<string, unknown>).SessionKey;
+    const _grc_sk_str = typeof _grc_sk === "string" ? _grc_sk : "-";
+    defaultRuntime.log?.(
+      `BOTLIST_TRACE_V1 [h] getReplyFromConfig entry cmd="${_grc_cmd}" sessionKey=${_grc_sk_str}`,
+    );
+  }
   const targetSessionKey =
     ctx.CommandSource === "native" ? ctx.CommandTargetSessionKey?.trim() : undefined;
   const agentSessionKey = targetSessionKey || ctx.SessionKey;

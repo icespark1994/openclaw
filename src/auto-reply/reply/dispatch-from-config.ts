@@ -111,6 +111,15 @@ export async function dispatchReplyFromConfig(params: {
   const chatId = ctx.To ?? ctx.From;
   const messageId = ctx.MessageSid ?? ctx.MessageSidFirst ?? ctx.MessageSidLast;
   const sessionKey = ctx.SessionKey;
+  // BOTLIST_TRACE_V1 point-e: dispatchReplyFromConfig entry
+  const _dfc_cmd = String(ctx.CommandBody ?? ctx.RawBody ?? "")
+    .trim()
+    .slice(0, 60);
+  if (_dfc_cmd.startsWith("/bot-")) {
+    logVerbose(
+      `BOTLIST_TRACE_V1 [e] dispatchReplyFromConfig entry cmd="${_dfc_cmd}" sessionKey=${sessionKey ?? "-"} channel=${channel}`,
+    );
+  }
   const startTime = diagnosticsEnabled ? Date.now() : 0;
   const canTrackSession = diagnosticsEnabled && Boolean(sessionKey);
 
@@ -308,6 +317,15 @@ export async function dispatchReplyFromConfig(params: {
     }
 
     const bypassAcpForCommand = shouldBypassAcpDispatchForCommand(ctx, cfg);
+    const _cmdCandidate = String(ctx.CommandBody ?? ctx.RawBody ?? "")
+      .trim()
+      .slice(0, 60);
+    if (_cmdCandidate.startsWith("/bot-")) {
+      // BOTLIST_TRACE_V1 point-f (result context) + point-g-pre
+      logVerbose(
+        `BOTLIST_TRACE_V1 [f+g-pre] bypassAcpForCommand=${bypassAcpForCommand} acpDispatchSessionKey=${acpDispatchSessionKey ?? "-"} cmd="${_cmdCandidate}"`,
+      );
+    }
 
     const sendPolicy = resolveSendPolicy({
       cfg,
@@ -349,6 +367,12 @@ export async function dispatchReplyFromConfig(params: {
       recordProcessed,
       markIdle,
     });
+    // BOTLIST_TRACE_V1 point-g-post: after tryDispatchAcpReply
+    if (_cmdCandidate.startsWith("/bot-")) {
+      logVerbose(
+        `BOTLIST_TRACE_V1 [g-post] tryDispatchAcpReply result=${acpDispatch ? "INTERCEPTED_BY_ACP" : "null_fell_through"}`,
+      );
+    }
     if (acpDispatch) {
       return acpDispatch;
     }
@@ -469,6 +493,14 @@ export async function dispatchReplyFromConfig(params: {
     }
 
     const replies = replyResult ? (Array.isArray(replyResult) ? replyResult : [replyResult]) : [];
+
+    // BOTLIST_TRACE_V1 point-k: before sending final reply(ies)
+    if (_cmdCandidate.startsWith("/bot-")) {
+      const replySnippet = replies[0]?.text?.slice(0, 80) ?? "(no text)";
+      logVerbose(
+        `BOTLIST_TRACE_V1 [k] final replies count=${replies.length} first="${replySnippet}"`,
+      );
+    }
 
     let queuedFinal = false;
     let routedFinalCount = 0;

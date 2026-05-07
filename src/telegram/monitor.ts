@@ -39,8 +39,9 @@ export function createTelegramRunnerOptions(cfg: OpenClawConfig): RunOptions<unk
     },
     runner: {
       fetch: {
-        // Match grammY defaults
-        timeout: 30,
+        // Reduced from 30 to 20 so grammY's 30s timeoutSeconds has a 10 s
+        // buffer above the long-poll — prevents timer racing on empty polls.
+        timeout: 20,
         // Request reactions without dropping default update types.
         allowed_updates: resolveTelegramAllowedUpdates(),
       },

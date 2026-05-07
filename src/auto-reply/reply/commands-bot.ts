@@ -8,17 +8,21 @@
 import os from "node:os";
 import path from "node:path";
 import { logVerbose } from "../../globals.js";
+import {
+  checkBotCommandPermission,
+  resolveUserRole,
+  buildDenialMessage,
+  emitAuditLog,
+  type BotAction,
+} from "../../ops/bots/auth.js";
 import { parseCommand, handleBotCommand } from "../../ops/bots/control-entry.js";
 import { ControlService } from "../../ops/bots/control-service.js";
-import {
-	checkBotCommandPermission,
-	resolveUserRole,
-	buildDenialMessage,
-	emitAuditLog,
-	type BotAction,
-} from "../../ops/bots/auth.js";
 import { generateBotDraft } from "../../ops/bots/draft-service.js";
-import { setPendingDraft, getPendingDraft, clearPendingDraft } from "../../ops/bots/pending-drafts.js";
+import {
+  setPendingDraft,
+  getPendingDraft,
+  clearPendingDraft,
+} from "../../ops/bots/pending-drafts.js";
 import type { CommandHandler } from "./commands-types.js";
 
 /**
@@ -26,156 +30,192 @@ import type { CommandHandler } from "./commands-types.js";
  * Convention: ~/.openclaw/bots/  (or OPENCLAW_BOTS_DIR override).
  */
 function resolveBotsDir(): string {
-	return process.env.OPENCLAW_BOTS_DIR ?? path.join(os.homedir(), ".openclaw", "bots");
+  return process.env.OPENCLAW_BOTS_DIR ?? path.join(os.homedir(), ".openclaw", "bots");
 }
 
 /** Lazily created ControlService singleton (one per process). */
 let cachedService: ControlService | null = null;
 
 function getControlService(): ControlService {
-	if (!cachedService) {
-		const specDir = resolveBotsDir();
-		cachedService = new ControlService({
-			specDir,
-			planOptions: {
-				configDir: path.join(path.dirname(specDir), "bot-config"),
-			},
-			executorOptions: {
-				composeDir: path.join(path.dirname(specDir), "bot-compose"),
-			},
-		});
-	}
-	return cachedService;
+  if (!cachedService) {
+    const specDir = resolveBotsDir();
+    cachedService = new ControlService({
+      specDir,
+      planOptions: {
+        configDir: path.join(path.dirname(specDir), "bot-config"),
+      },
+      executorOptions: {
+        composeDir: path.join(path.dirname(specDir), "bot-compose"),
+      },
+    });
+  }
+  return cachedService;
 }
 
 /** Reset the cached service (for testing). */
 export function resetControlServiceCache(): void {
-	cachedService = null;
+  cachedService = null;
 }
 
 /** Map parsed command type to BotAction for auth check. */
 function commandToAction(cmd: string): BotAction | null {
-	switch (cmd) {
-		case "deploy": case "stop": case "restart":
-		case "list": case "status": case "help": case "audit": case "draft":
-		case "draft-deploy": case "confirm": case "cancel": case "invoke":
-			return cmd as BotAction;
-		default:
-			// "unknown" commands still need at least viewer to see error/help
-			return "help";
-	}
+  switch (cmd) {
+    case "deploy":
+    case "stop":
+    case "restart":
+    case "list":
+    case "status":
+    case "help":
+    case "audit":
+    case "draft":
+    case "draft-deploy":
+    case "confirm":
+    case "cancel":
+    case "invoke":
+      return cmd as BotAction;
+    default:
+      // "unknown" commands still need at least viewer to see error/help
+      return "help";
+  }
 }
 
 /** Extract target bot ID from a parsed command (for audit). */
 function extractTargetBotId(input: string): string | undefined {
-	const parsed = parseCommand(input);
-	if ("id" in parsed) return parsed.id;
-	return undefined;
+  const parsed = parseCommand(input);
+  if ("id" in parsed) {
+    return parsed.id;
+  }
+  return undefined;
 }
 
 export const handleBotCommands: CommandHandler = async (params, allowTextCommands) => {
-	if (!allowTextCommands) {
-		return null;
-	}
+  if (!allowTextCommands) {
+    return null;
+  }
 
-	const commandBody = params.command.commandBodyNormalized;
-	if (!commandBody.startsWith("/bot-")) {
-		return null;
-	}
+  const commandBody = params.command.commandBodyNormalized;
+  if (!commandBody.startsWith("/bot-")) {
+    return null;
+  }
 
-	if (!params.command.isAuthorizedSender) {
-		logVerbose(
-			`Ignoring /bot- command from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
-		);
-		return { shouldContinue: false };
-	}
+  // BOTLIST_TRACE_V1 point-j: handleBotCommands intercepted
+  logVerbose(
+    `BOTLIST_TRACE_V1 [j] handleBotCommands intercepted cmd="${commandBody.slice(0, 60)}" authorized=${params.command.isAuthorizedSender}`,
+  );
 
-	const userId = params.command.senderId ?? "unknown";
-	const parsed = parseCommand(commandBody);
-	const action = commandToAction(parsed.cmd);
+  if (!params.command.isAuthorizedSender) {
+    logVerbose(
+      `Ignoring /bot- command from unauthorized sender: ${params.command.senderId || "<unknown>"}`,
+    );
+    return { shouldContinue: false };
+  }
 
-	// Authorization check
-	if (action && !checkBotCommandPermission(userId, action)) {
-		const role = resolveUserRole(userId);
-		const denial = buildDenialMessage(action, role);
+  const userId = params.command.senderId ?? "unknown";
+  const parsed = parseCommand(commandBody);
+  const action = commandToAction(parsed.cmd);
 
-		emitAuditLog({
-			timestamp: new Date().toISOString(),
-			userId,
-			command: commandBody,
-			targetBotId: extractTargetBotId(commandBody),
-			result: "denied",
-		});
+  // Authorization check
+  if (action && !checkBotCommandPermission(userId, action)) {
+    const role = resolveUserRole(userId);
+    const denial = buildDenialMessage(action, role);
 
-		return {
-			shouldContinue: false,
-			reply: { text: denial },
-		};
-	}
+    emitAuditLog({
+      timestamp: new Date().toISOString(),
+      userId,
+      command: commandBody,
+      targetBotId: extractTargetBotId(commandBody),
+      result: "denied",
+    });
 
-	// Handle draft-deploy / confirm / cancel (need userId for pending cache)
-	if (parsed.cmd === "draft-deploy" && "text" in parsed) {
-		const draft = generateBotDraft(parsed.text);
-		if (!draft.ok) {
-			return { shouldContinue: false, reply: { text: draft.message } };
-		}
-		// Extract YAML from the draft message (between ```yaml and ```)
-		const yamlMatch = draft.message.match(/```yaml\n([\s\S]+?)```/);
-		const yaml = yamlMatch?.[1]?.trim() ?? "";
-		// Extract bot id from the YAML
-		const idMatch = yaml.match(/^id:\s*(.+)$/m);
-		const botId = idMatch?.[1]?.trim() ?? "unknown";
+    return {
+      shouldContinue: false,
+      reply: { text: denial },
+    };
+  }
 
-		setPendingDraft(userId, { yaml, botId, createdAt: new Date().toISOString() });
+  // Handle draft-deploy / confirm / cancel (need userId for pending cache)
+  if (parsed.cmd === "draft-deploy" && "text" in parsed) {
+    const draft = generateBotDraft(parsed.text);
+    if (!draft.ok) {
+      return { shouldContinue: false, reply: { text: draft.message } };
+    }
+    // Extract YAML from the draft message (between ```yaml and ```)
+    const yamlMatch = draft.message.match(/```yaml\n([\s\S]+?)```/);
+    const yaml = yamlMatch?.[1]?.trim() ?? "";
+    // Extract bot id from the YAML
+    const idMatch = yaml.match(/^id:\s*(.+)$/m);
+    const botId = idMatch?.[1]?.trim() ?? "unknown";
 
-		emitAuditLog({ timestamp: new Date().toISOString(), userId, command: commandBody, targetBotId: botId, result: "success" });
+    setPendingDraft(userId, { yaml, botId, createdAt: new Date().toISOString() });
 
-		const reply = [
-			draft.message.replace(
-				"Review this draft, then run /bot-deploy <yaml> to deploy.",
-				"Reply /bot-confirm to deploy, or /bot-cancel to discard.",
-			),
-		].join("\n");
-		return { shouldContinue: false, reply: { text: reply } };
-	}
+    emitAuditLog({
+      timestamp: new Date().toISOString(),
+      userId,
+      command: commandBody,
+      targetBotId: botId,
+      result: "success",
+    });
 
-	if (parsed.cmd === "confirm") {
-		const pending = getPendingDraft(userId);
-		if (!pending) {
-			return { shouldContinue: false, reply: { text: "No pending draft. Use /bot-draft-deploy <desc> first." } };
-		}
-		clearPendingDraft(userId);
-		const service = getControlService();
-		const response = await service.deployFromYaml(pending.yaml);
-		emitAuditLog({ timestamp: new Date().toISOString(), userId, command: "/bot-confirm", targetBotId: pending.botId, result: response.ok ? "success" : "error" });
-		return { shouldContinue: false, reply: { text: response.message } };
-	}
+    const reply = [
+      draft.message.replace(
+        "Review this draft, then run /bot-deploy <yaml> to deploy.",
+        "Reply /bot-confirm to deploy, or /bot-cancel to discard.",
+      ),
+    ].join("\n");
+    return { shouldContinue: false, reply: { text: reply } };
+  }
 
-	if (parsed.cmd === "cancel") {
-		const had = clearPendingDraft(userId);
-		const msg = had ? "Draft discarded." : "No pending draft to cancel.";
-		emitAuditLog({ timestamp: new Date().toISOString(), userId, command: "/bot-cancel", result: "success" });
-		return { shouldContinue: false, reply: { text: msg } };
-	}
+  if (parsed.cmd === "confirm") {
+    const pending = getPendingDraft(userId);
+    if (!pending) {
+      return {
+        shouldContinue: false,
+        reply: { text: "No pending draft. Use /bot-draft-deploy <desc> first." },
+      };
+    }
+    clearPendingDraft(userId);
+    const service = getControlService();
+    const response = await service.deployFromYaml(pending.yaml);
+    emitAuditLog({
+      timestamp: new Date().toISOString(),
+      userId,
+      command: "/bot-confirm",
+      targetBotId: pending.botId,
+      result: response.ok ? "success" : "error",
+    });
+    return { shouldContinue: false, reply: { text: response.message } };
+  }
 
-	// Dispatch all other commands via control-entry
-	const service = getControlService();
-	const reply = await handleBotCommand(commandBody, service);
+  if (parsed.cmd === "cancel") {
+    const had = clearPendingDraft(userId);
+    const msg = had ? "Draft discarded." : "No pending draft to cancel.";
+    emitAuditLog({
+      timestamp: new Date().toISOString(),
+      userId,
+      command: "/bot-cancel",
+      result: "success",
+    });
+    return { shouldContinue: false, reply: { text: msg } };
+  }
 
-	if (reply === null) {
-		return null;
-	}
+  // Dispatch all other commands via control-entry
+  const service = getControlService();
+  const reply = await handleBotCommand(commandBody, service);
 
-	emitAuditLog({
-		timestamp: new Date().toISOString(),
-		userId,
-		command: commandBody,
-		targetBotId: extractTargetBotId(commandBody),
-		result: "success",
-	});
+  if (reply === null) {
+    return null;
+  }
 
-	return {
-		shouldContinue: false,
-		reply: { text: reply },
-	};
+  emitAuditLog({
+    timestamp: new Date().toISOString(),
+    userId,
+    command: commandBody,
+    targetBotId: extractTargetBotId(commandBody),
+    result: "success",
+  });
+
+  return {
+    shouldContinue: false,
+    reply: { text: reply },
+  };
 };
