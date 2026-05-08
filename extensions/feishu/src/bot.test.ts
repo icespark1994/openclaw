@@ -99,6 +99,42 @@ describe("buildFeishuAgentBody", () => {
       '[message_id: msg-42]\nSender Name: [Replying to: "previous message"]\n\nhello world\n\n[System: Your reply will automatically @mention: Target User. Do not write @xxx yourself.]\n\n[System: The bot encountered a Feishu API permission error. Please inform the user about this issue and provide the permission grant URL for the admin to authorize. Permission grant URL: https://open.feishu.cn/app/cli_test]',
     );
   });
+
+  it("omits mention-tag hint when bot was the only mention (content has no <at> tags)", () => {
+    // Simulates "@Bot hello" in a group: normalizeMentions strips the bot mention,
+    // leaving plain content. The group prompt should match a DM prompt exactly.
+    const body = buildFeishuAgentBody({
+      ctx: {
+        content: "hello",
+        senderName: "Zhang San",
+        senderOpenId: "ou-sender",
+        messageId: "msg-bot-only",
+        hasAnyMention: true, // raw event had a mention, but it was the bot (stripped)
+      },
+      botOpenId: "ou-bot",
+    });
+
+    expect(body).toBe("[message_id: msg-bot-only]\nZhang San: hello");
+  });
+
+  it("includes mention-tag hint when non-bot <at> tags remain in content", () => {
+    // Simulates "@Bot @Alice hello": Alice's mention is preserved as an <at> tag.
+    const body = buildFeishuAgentBody({
+      ctx: {
+        content: '<at user_id="ou-alice">Alice</at> hello',
+        senderName: "Zhang San",
+        senderOpenId: "ou-sender",
+        messageId: "msg-multi-mention",
+        hasAnyMention: true,
+      },
+      botOpenId: "ou-bot",
+    });
+
+    expect(body).toContain(
+      '[System: The content may include mention tags in the form <at user_id="...">name</at>.',
+    );
+    expect(body).toContain('[System: If user_id is "ou-bot", that mention refers to you.]');
+  });
 });
 
 describe("handleFeishuMessage command authorization", () => {

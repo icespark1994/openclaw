@@ -832,7 +832,12 @@ export function buildFeishuAgentBody(params: {
   const speaker = ctx.senderName ?? ctx.senderOpenId;
   messageBody = `${speaker}: ${messageBody}`;
 
-  if (ctx.hasAnyMention) {
+  // Only add the mention-tag context hint when non-bot mentions remain in the
+  // normalized content. Bot-only mentions (@Bot hello) are stripped to plain text
+  // by normalizeMentions, leaving no <at> tags — in that case the group prompt
+  // should be identical to a DM prompt.
+  const contentHasAtTags = ctx.content.includes("<at user_id=");
+  if (ctx.hasAnyMention && contentHasAtTags) {
     const botIdHint = botOpenId?.trim();
     messageBody +=
       `\n\n[System: The content may include mention tags in the form <at user_id="...">name</at>. ` +
