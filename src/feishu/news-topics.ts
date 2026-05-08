@@ -13,7 +13,8 @@ export type NewsCategory =
   | "Cardiovascular-Neuro"
   | "Wearables-RPM"
   | "Regulatory-FDA"
-  | "Commercial-Industry";
+  | "Commercial-Industry"
+  | "Neurointervention-Deals";
 
 export const NEWS_TOPIC_KEYWORDS: Record<NewsCategory, string[]> = {
   "AI-MedDevice": [
@@ -88,6 +89,37 @@ export const NEWS_TOPIC_KEYWORDS: Record<NewsCategory, string[]> = {
     "AI medical device FDA cleared commercial",
     "AI hospital technology deal",
     "medtech AI startup investment",
+  ],
+  "Neurointervention-Deals": [
+    "neurointervention funding",
+    "neurovascular startup funding",
+    "neurovascular acquisition",
+    "neurovascular merger",
+    "neurointerventional device investment",
+    "stroke thrombectomy startup funding",
+    "aneurysm device acquisition",
+    "flow diverter company acquisition",
+    "stent retriever company funding",
+    "embolization device investment",
+    "medtech M&A neurovascular",
+    "strategic investment neurovascular device",
+    "neurovascular device IPO",
+    "neurovascular licensing deal",
+    "neurovascular partnership",
+    "Cerenovus acquisition",
+    "Stryker Neurovascular acquisition",
+    "Medtronic neurovascular investment",
+    "Penumbra acquisition",
+    "MicroVention investment",
+    "Balt neurovascular funding",
+    "Wallaby Medical financing",
+    "Rapid Medical acquisition",
+    "Imperative Care funding",
+    "Synchron investment",
+    "Route 92 Medical funding",
+    "Q'Apel Medical funding",
+    "Ceretrieve funding",
+    "Vesalio funding",
   ],
 };
 

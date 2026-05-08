@@ -80,6 +80,7 @@ Priority topics:
 - AI cardiovascular and neurovascular device news
 - Significant medtech AI funding rounds or acquisitions (>$20M or strategic)
 - AI SaMD (Software as a Medical Device) regulatory updates
+- Neurointervention / neurovascular industry financing, M&A, acquisitions, strategic investment, IPO, licensing or partnership deals (e.g. Cerenovus, Stryker Neurovascular, Medtronic neurovascular, Penumbra, MicroVention, Balt, Wallaby Medical, Rapid Medical, Imperative Care, Synchron, Route 92 Medical, Q'Apel Medical, Ceretrieve, Vesalio, or any stroke/thrombectomy/aneurysm/flow-diverter/stent-retriever/embolization device company)
 
 Output rules:
 1. Return ${minItems}–${maxItems} high-quality, real news items, one per line (target ${targetItems}; send if at least ${minItems} found).
@@ -92,7 +93,7 @@ Output rules:
    - 一句话中文摘要: One concise Simplified Chinese sentence; high information density for medical device industry readers
    - 中文行业重要性: Simplified Chinese explanation of why this matters to the AI medical device industry
    - SOURCE_URL: Original URL unchanged — do NOT translate
-   - CATEGORY: ONE of these exact English tokens (do not translate): AI-MedDevice, Imaging-Diagnostics, Surgical-Robotics, Cardiovascular-Neuro, Wearables-RPM, Regulatory-FDA, Commercial-Industry
+   - CATEGORY: ONE of these exact English tokens (do not translate): AI-MedDevice, Imaging-Diagnostics, Surgical-Robotics, Cardiovascular-Neuro, Wearables-RPM, Regulatory-FDA, Commercial-Industry, Neurointervention-Deals
 5. Use only real, verifiable URLs. Do NOT fabricate links.
 6. Output NO_ENOUGH_NEWS (exactly this string) only if the ${extended}-day window yields fewer than ${minItems} qualifying items.
 7. Skip: generic AI news, biotech-only stories without a device component, low-quality press releases.

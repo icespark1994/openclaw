@@ -24,6 +24,7 @@ const CATEGORY_EMOJI: Record<NewsCategory, string> = {
   "Wearables-RPM": "📡",
   "Regulatory-FDA": "📋",
   "Commercial-Industry": "💼",
+  "Neurointervention-Deals": "🧠",
 };
 
 const CATEGORY_LABEL_ZH: Record<NewsCategory, string> = {
@@ -34,6 +35,7 @@ const CATEGORY_LABEL_ZH: Record<NewsCategory, string> = {
   "Wearables-RPM": "可穿戴与远程监测",
   "Regulatory-FDA": "监管与审批",
   "Commercial-Industry": "商业与产业动态",
+  "Neurointervention-Deals": "神经介入投融资与并购",
 };
 
 /**
@@ -145,6 +147,13 @@ export function parseLLMOutput(raw: string): NewsItem[] {
       cat.includes("ce-mark")
     ) {
       category = "Regulatory-FDA";
+    } else if (
+      cat.includes("neurointervention") ||
+      cat.includes("neurovascular-deal") ||
+      cat.includes("neuro-deal") ||
+      cat.includes("neurointervention-deal")
+    ) {
+      category = "Neurointervention-Deals";
     } else if (
       cat.includes("commercial") ||
       cat.includes("industry") ||
