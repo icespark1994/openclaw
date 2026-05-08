@@ -36,6 +36,7 @@ pnpm ui:build
 
 docker buildx build \
   --platform linux/amd64 \
+  --build-arg OPENCLAW_EXTENSIONS="feishu" \
   -t "$TAG" \
   . \
   --push
