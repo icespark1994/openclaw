@@ -58,6 +58,7 @@ export type DraftEntry = {
   timezone: string;
   calendar_id: string;
   description: string;
+  enable_vchat: boolean;
   source_user: string | undefined;
   source_channel: string | undefined;
   created_at: number;
@@ -75,6 +76,7 @@ export type CalendarEventDraft = {
   timezone: string;
   calendar_id: string;
   description: string;
+  enable_vchat: boolean;
   attendees: never[];
   preview: string;
 };
@@ -86,8 +88,10 @@ export function buildEventDraft(params: {
   timezone?: string;
   calendar_id: string;
   description?: string;
+  enable_vchat?: boolean;
 }): CalendarEventDraft {
   const tz = params.timezone?.trim() || DEFAULT_TIMEZONE;
+  const enableVchat = params.enable_vchat !== false; // default true
   return {
     title: params.title,
     start_time: params.start_time,
@@ -95,6 +99,7 @@ export function buildEventDraft(params: {
     timezone: tz,
     calendar_id: params.calendar_id,
     description: params.description ?? "",
+    enable_vchat: enableVchat,
     attendees: [],
     preview: formatDraftPreview({
       title: params.title,
@@ -102,6 +107,7 @@ export function buildEventDraft(params: {
       end_time: params.end_time,
       timezone: tz,
       calendar_id: params.calendar_id,
+      enable_vchat: enableVchat,
     }),
   };
 }
@@ -112,13 +118,16 @@ function formatDraftPreview(params: {
   end_time: string;
   timezone: string;
   calendar_id: string;
+  enable_vchat: boolean;
 }): string {
+  const vchatLine = params.enable_vchat ? "📹 视频会议：飞书会议\n" : "📹 视频会议：无\n";
   return (
     `我准备创建以下日程：\n` +
     `📅 标题：${params.title}\n` +
     `🕐 开始：${params.start_time}（${params.timezone}）\n` +
     `🕑 结束：${params.end_time}（${params.timezone}）\n` +
     `📆 日历 ID：${params.calendar_id}\n` +
+    vchatLine +
     `👥 参与人：仅你（本阶段不支持邀请他人）\n\n` +
     `请回复「确认」/ "confirm" / "yes" 后创建日程。`
   );
@@ -188,6 +197,8 @@ export async function createCalendarEvent(
       ...(entry.description ? { description: entry.description } : {}),
       start_time: { timestamp: startTs, timezone: entry.timezone },
       end_time: { timestamp: endTs, timezone: entry.timezone },
+      // vc_type "vc" = Feishu native video conference; "no_meeting" = no vchat.
+      vchat: { vc_type: entry.enable_vchat ? "vc" : "no_meeting" },
     },
     path: { calendar_id: calendarId },
   });
@@ -211,6 +222,11 @@ export async function createCalendarEvent(
         "The event may not have been created. Please try again.",
     };
   }
+
+  const vchat = event.vchat as
+    | { vc_type?: string; meeting_url?: string; vc_info?: { meeting_no?: string } }
+    | undefined;
+
   return {
     success: true,
     event_id: event.event_id,
@@ -219,11 +235,10 @@ export async function createCalendarEvent(
     start_time: entry.start_time,
     end_time: entry.end_time,
     timezone: event.start_time?.timezone ?? entry.timezone,
+    vchat_enabled: entry.enable_vchat,
+    ...(vchat?.meeting_url ? { meeting_url: vchat.meeting_url } : {}),
+    ...(vchat?.vc_info?.meeting_no ? { meeting_no: vchat.vc_info.meeting_no } : {}),
     ...(event.app_link ? { app_link: event.app_link } : {}),
-    note:
-      "Event created on the Ainetrix_Master_Bot calendar. " +
-      "To see it in your Feishu Calendar, subscribe to 'Ainetrix_Master_Bot' calendar " +
-      "or open the app_link directly.",
   };
 }
 
@@ -316,6 +331,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                   timezone: p.timezone,
                   calendar_id: validation.calendarId,
                   description: p.description,
+                  enable_vchat: p.enable_vchat,
                 });
 
                 const draftId = randomUUID();
@@ -326,6 +342,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                   timezone: baseDraft.timezone,
                   calendar_id: baseDraft.calendar_id,
                   description: baseDraft.description,
+                  enable_vchat: baseDraft.enable_vchat,
                   source_user: requesterSenderId ?? undefined,
                   source_channel: messageChannel ?? undefined,
                   created_at: Date.now(),
@@ -426,6 +443,6 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
   );
 
   api.logger.info?.(
-    "feishu_calendar: Registered feishu_calendar (Stage C4 — real create_event enabled)",
+    "feishu_calendar: Registered feishu_calendar (Stage C4.1 — vchat enabled by default)",
   );
 }

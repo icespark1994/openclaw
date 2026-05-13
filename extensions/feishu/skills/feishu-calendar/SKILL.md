@@ -29,6 +29,15 @@ The required flow is:
 
 If the user does not confirm, do not create. If the user edits the details, call `create_event_draft` again with the updated parameters and repeat the confirmation step.
 
+## Video Conference (vchat)
+
+**Default behavior: every event is created with a Feishu native video conference (`enable_vchat: true`).**
+
+- The draft preview always shows the vchat status: `📹 视频会议：飞书会议` or `📹 视频会议：无`.
+- Only set `enable_vchat: false` when the user **explicitly** says "线下会议", "不要视频会议", "no video", or similar.
+- After a successful `create_event`, report `meeting_url` (if returned) so the user can join directly.
+- **NEVER claim** a meeting link was created unless `create_event` returns `success: true`.
+
 ## Date and Time Handling
 
 - **Always resolve relative dates** ("本周五", "明天", "下午两点") to absolute ISO 8601 datetime before calling any tool.
@@ -51,16 +60,22 @@ Returns available calendars with their `calendar_id`. Use this when the user ask
 ```json
 {
   "action": "create_event_draft",
-  "title": "税务报表解析",
-  "start_time": "2026-05-15T13:00:00+08:00",
-  "end_time": "2026-05-15T14:00:00+08:00",
+  "title": "产品讨论",
+  "start_time": "2026-05-16T15:00:00+08:00",
+  "end_time": "2026-05-16T16:00:00+08:00",
   "timezone": "Asia/Shanghai",
   "calendar_id": "optional — omit to use default",
-  "description": "optional"
+  "description": "optional",
+  "enable_vchat": true
 }
 ```
 
 Returns a `preview` string and a `draft_id`. Show the preview to the user as-is before asking for confirmation. **Save the `draft_id`** — you must pass it to `create_event`.
+
+The preview will include:
+
+- 标题、时间、时区、日历 ID
+- `📹 视频会议：飞书会议`（enable_vchat=true）或 `📹 视频会议：无`（enable_vchat=false）
 
 ### create_event
 
@@ -79,17 +94,18 @@ If the tool returns an error mentioning "not authorized" or "AINETRIX_CALENDAR_A
 
 ## Example Conversation
 
-**User:** 帮我创建一个日程，本周五下午一点，会议主题：税务报表解析，会议时长：1小时。
+**User:** 帮我创建一个日程，明天下午3点，产品讨论，1小时
 
 **Bot (internal):** Call `create_event_draft`:
 
 ```json
 {
   "action": "create_event_draft",
-  "title": "税务报表解析",
-  "start_time": "2026-05-16T13:00:00+08:00",
-  "end_time": "2026-05-16T14:00:00+08:00",
-  "timezone": "Asia/Shanghai"
+  "title": "产品讨论",
+  "start_time": "2026-05-14T15:00:00+08:00",
+  "end_time": "2026-05-14T16:00:00+08:00",
+  "timezone": "Asia/Shanghai",
+  "enable_vchat": true
 }
 ```
 
@@ -110,10 +126,27 @@ If the tool returns an error mentioning "not authorized" or "AINETRIX_CALENDAR_A
 
 - 创建成功 ✅
 - event_id（可用于追踪）
-- **app_link**（如有）作为可点击链接，方便用户直接在飞书客户端打开日程
-- 提示：本次日程创建在 **Ainetrix_Master_Bot 的日历**（不是用户个人日历）。如在飞书日历中看不到，请在飞书日历 → 其他日历 → 搜索「Ainetrix_Master_Bot」并订阅。
+- **meeting_url**（如有）作为视频会议链接，供用户直接加入
+- **app_link**（如有）作为飞书日历深链，供用户在客户端查看日程
+- 提示：日程已创建在 **Ainetrix Team Calendar**，团队成员可见。
 
 If the tool returns an error, report the error message to the user.
+
+## Disable Video Conference
+
+If the user says "线下会议", "不要视频会议", "no video conference", or similar:
+
+```json
+{
+  "action": "create_event_draft",
+  "title": "...",
+  "start_time": "...",
+  "end_time": "...",
+  "enable_vchat": false
+}
+```
+
+The preview will show `📹 视频会议：无`.
 
 ## Attendees
 
@@ -127,7 +160,7 @@ Write access is restricted by `AINETRIX_CALENDAR_ALLOWED_USERS`. If not configur
 
 ## Required Feishu App Permissions
 
-| Scope                           | Required for                       |
-| ------------------------------- | ---------------------------------- |
-| `calendar:calendar:readonly`    | `list_calendars`                   |
-| `calendar:calendar.event:write` | `create_event` (Stage C4 — active) |
+| Scope                           | Required for                         |
+| ------------------------------- | ------------------------------------ |
+| `calendar:calendar:readonly`    | `list_calendars`                     |
+| `calendar:calendar.event:write` | `create_event` (Stage C4.1 — active) |
