@@ -226,6 +226,23 @@ export async function createCalendarEvent(
   const vchat = event.vchat as
     | { vc_type?: string; meeting_url?: string; vc_info?: { meeting_no?: string } }
     | undefined;
+  const meetingUrl = vchat?.meeting_url;
+
+  // Patch description to include meeting_url so it is visible to all calendar subscribers
+  // (Feishu only shows the vchat join button to event attendees/organizer; non-attendee
+  // subscribers see the description, making this the reliable way to surface the link).
+  if (entry.enable_vchat && meetingUrl && lark.calendar?.calendarEvent?.patch) {
+    const meetingLine = `📹 飞书视频会议 / Feishu Meeting: ${meetingUrl}`;
+    const patchedDesc = entry.description ? `${entry.description}\n\n${meetingLine}` : meetingLine;
+    try {
+      await lark.calendar.calendarEvent.patch({
+        data: { description: patchedDesc },
+        path: { calendar_id: calendarId, event_id: event.event_id },
+      });
+    } catch {
+      // Non-fatal: vchat is still set; description patch is best-effort.
+    }
+  }
 
   return {
     success: true,
@@ -236,7 +253,7 @@ export async function createCalendarEvent(
     end_time: entry.end_time,
     timezone: event.start_time?.timezone ?? entry.timezone,
     vchat_enabled: entry.enable_vchat,
-    ...(vchat?.meeting_url ? { meeting_url: vchat.meeting_url } : {}),
+    ...(meetingUrl ? { meeting_url: meetingUrl } : {}),
     ...(vchat?.vc_info?.meeting_no ? { meeting_no: vchat.vc_info.meeting_no } : {}),
     ...(event.app_link ? { app_link: event.app_link } : {}),
   };

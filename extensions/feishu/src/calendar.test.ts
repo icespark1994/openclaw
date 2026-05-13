@@ -266,13 +266,16 @@ describe("isUserAllowed", () => {
 
 describe("createCalendarEvent", () => {
   const calendarEventCreateMock = vi.fn();
+  const calendarEventPatchMock = vi.fn().mockResolvedValue({ code: 0 });
 
   beforeEach(() => {
     vi.clearAllMocks();
+    calendarEventPatchMock.mockResolvedValue({ code: 0 });
     createFeishuClientMock.mockReturnValue({
       calendar: {
         calendarEvent: {
           create: calendarEventCreateMock,
+          patch: calendarEventPatchMock,
         },
       },
     });
@@ -358,6 +361,36 @@ describe("createCalendarEvent", () => {
     await createCalendarEvent(client, "cal_id", { ...entry, enable_vchat: false });
     const callArg = calendarEventCreateMock.mock.calls[0][0];
     expect(callArg.data.vchat).toEqual({ vc_type: "no_meeting" });
+  });
+
+  it("patches description with meeting_url when vchat enabled and meeting_url returned", async () => {
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: {
+        event: {
+          event_id: "ev_patch",
+          summary: "X",
+          start_time: { timezone: "Asia/Shanghai" },
+          vchat: { vc_type: "vc", meeting_url: "https://vc.feishu.cn/j/12345" },
+        },
+      },
+    });
+    const client = createFeishuClientMock();
+    await createCalendarEvent(client, "cal_id", { ...entry, enable_vchat: true });
+    expect(calendarEventPatchMock).toHaveBeenCalledOnce();
+    const patchArg = calendarEventPatchMock.mock.calls[0][0];
+    expect(patchArg.data.description).toContain("https://vc.feishu.cn/j/12345");
+    expect(patchArg.path.event_id).toBe("ev_patch");
+  });
+
+  it("does not patch description when enable_vchat=false", async () => {
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: { event: { event_id: "ev3", summary: "X", start_time: { timezone: "Asia/Shanghai" } } },
+    });
+    const client = createFeishuClientMock();
+    await createCalendarEvent(client, "cal_id", { ...entry, enable_vchat: false });
+    expect(calendarEventPatchMock).not.toHaveBeenCalled();
   });
 
   it("returns error when code=0 but event_id is absent", async () => {
