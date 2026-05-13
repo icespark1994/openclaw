@@ -182,7 +182,7 @@ describe("parseAllowedUsers", () => {
 describe("isUserAllowed", () => {
   const allowed = new Set(["feishu:ou_abc", "telegram:12345"]);
 
-  it("returns true for a matching entry", () => {
+  it("returns true for a matching channel:senderId entry", () => {
     expect(isUserAllowed("feishu", "ou_abc", allowed)).toBe(true);
     expect(isUserAllowed("telegram", "12345", allowed)).toBe(true);
   });
@@ -191,16 +191,32 @@ describe("isUserAllowed", () => {
     expect(isUserAllowed("feishu", "ou_other", allowed)).toBe(false);
   });
 
-  it("returns false when channel is undefined", () => {
+  it("returns false when channel is undefined and no agentId match", () => {
     expect(isUserAllowed(undefined, "ou_abc", allowed)).toBe(false);
   });
 
-  it("returns false when senderId is undefined", () => {
+  it("returns false when senderId is undefined and no agentId match", () => {
     expect(isUserAllowed("feishu", undefined, allowed)).toBe(false);
   });
 
   it("returns false when allowedSet is empty", () => {
     expect(isUserAllowed("feishu", "ou_abc", new Set())).toBe(false);
+  });
+
+  it("returns true when agentId matches an agent: entry", () => {
+    const agentAllowed = new Set(["agent:ainetrix_feishu", "feishu:ou_abc"]);
+    // agentId match even when channel/senderId are undefined
+    expect(isUserAllowed(undefined, undefined, agentAllowed, "ainetrix_feishu")).toBe(true);
+    expect(isUserAllowed("feishu", undefined, agentAllowed, "ainetrix_feishu")).toBe(true);
+  });
+
+  it("returns false when agentId does not match any agent: entry", () => {
+    const agentAllowed = new Set(["agent:other_agent"]);
+    expect(isUserAllowed(undefined, undefined, agentAllowed, "ainetrix_feishu")).toBe(false);
+  });
+
+  it("returns true via channel:senderId even when agentId is absent", () => {
+    expect(isUserAllowed("feishu", "ou_abc", allowed, undefined)).toBe(true);
   });
 });
 

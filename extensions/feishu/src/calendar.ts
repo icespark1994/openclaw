@@ -142,17 +142,23 @@ export function parseAllowedUsers(envValue: string | undefined): Set<string> {
 }
 
 /**
- * Returns true if the user identified by (channel, senderId) is in the allowlist.
- * Canonical form: "channel:senderId" (e.g. "feishu:ou_abc123").
+ * Returns true if the caller is in the allowlist.
+ *
+ * Two entry formats are supported:
+ *  - "channel:senderId"  e.g. "feishu:ou_abc123"  — per-user (requesterSenderId)
+ *  - "agent:agentId"     e.g. "agent:ainetrix_feishu" — per-agent (ctx.agentId);
+ *    used when requesterSenderId is unavailable (senderId propagation gap in core).
  */
 export function isUserAllowed(
   channel: string | undefined,
   senderId: string | undefined,
   allowedSet: Set<string>,
+  agentId?: string | undefined,
 ): boolean {
-  if (!channel || !senderId) return false;
   if (allowedSet.size === 0) return false;
-  return allowedSet.has(`${channel}:${senderId}`);
+  if (channel && senderId && allowedSet.has(`${channel}:${senderId}`)) return true;
+  if (agentId && allowedSet.has(`agent:${agentId}`)) return true;
+  return false;
 }
 
 // ── Real Feishu Calendar event create ────────────────────────────────────────
@@ -262,6 +268,8 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
       // Trusted requester identity — provided by the runtime, not controllable via tool args.
       const requesterSenderId = ctx.requesterSenderId;
       const messageChannel = ctx.messageChannel;
+      // agentId fallback: used when requesterSenderId is unavailable (core propagation gap).
+      const agentId = ctx.agentId;
 
       return {
         name: "feishu_calendar",
@@ -371,12 +379,12 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                       "AINETRIX_CALENDAR_ALLOWED_USERS is not configured.",
                   });
                 }
-                if (!isUserAllowed(messageChannel, requesterSenderId, allowedUsers)) {
+                if (!isUserAllowed(messageChannel, requesterSenderId, allowedUsers, agentId)) {
                   return json({
                     error:
                       "You are not authorized to create calendar events. " +
                       "Contact the administrator to add your ID to AINETRIX_CALENDAR_ALLOWED_USERS. " +
-                      `Your ID format should be: ${messageChannel ?? "<channel>"}:${requesterSenderId ?? "<your_id>"}`,
+                      `Your ID format should be: ${messageChannel ?? "<channel>"}:${requesterSenderId ?? "<your_id>"} or agent:${agentId ?? "<agentId>"}`,
                   });
                 }
 
