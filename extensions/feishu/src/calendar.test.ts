@@ -36,6 +36,48 @@ describe("buildEventDraft", () => {
     expect(draft.description).toBe("");
   });
 
+  it("defaults enable_vchat to true", () => {
+    const draft = buildEventDraft({
+      title: "Meeting",
+      start_time: "2026-05-16T13:00:00+08:00",
+      end_time: "2026-05-16T14:00:00+08:00",
+      calendar_id: "cal_abc123",
+    });
+    expect(draft.enable_vchat).toBe(true);
+  });
+
+  it("sets enable_vchat false when explicitly disabled", () => {
+    const draft = buildEventDraft({
+      title: "Offline",
+      start_time: "2026-05-16T13:00:00+08:00",
+      end_time: "2026-05-16T14:00:00+08:00",
+      calendar_id: "cal_abc123",
+      enable_vchat: false,
+    });
+    expect(draft.enable_vchat).toBe(false);
+  });
+
+  it("preview shows 飞书会议 when vchat enabled", () => {
+    const draft = buildEventDraft({
+      title: "Sync",
+      start_time: "2026-05-16T13:00:00+08:00",
+      end_time: "2026-05-16T14:00:00+08:00",
+      calendar_id: "cal_abc123",
+    });
+    expect(draft.preview).toContain("视频会议：飞书会议");
+  });
+
+  it("preview shows 无 when vchat disabled", () => {
+    const draft = buildEventDraft({
+      title: "Offline",
+      start_time: "2026-05-16T13:00:00+08:00",
+      end_time: "2026-05-16T14:00:00+08:00",
+      calendar_id: "cal_abc123",
+      enable_vchat: false,
+    });
+    expect(draft.preview).toContain("视频会议：无");
+  });
+
   it("uses provided timezone over default", () => {
     const draft = buildEventDraft({
       title: "Sync",
@@ -243,6 +285,7 @@ describe("createCalendarEvent", () => {
     timezone: "Asia/Shanghai",
     calendar_id: "cal_feishu_default",
     description: "Quarterly review",
+    enable_vchat: true,
     source_user: "ou_abc123",
     source_channel: "feishu",
     created_at: Date.now(),
@@ -263,7 +306,7 @@ describe("createCalendarEvent", () => {
     expect(String(result.error)).toContain("11502");
   });
 
-  it("returns event_id and success on API success", async () => {
+  it("returns event_id, app_link, meeting_url on API success with vchat", async () => {
     calendarEventCreateMock.mockResolvedValue({
       code: 0,
       data: {
@@ -273,6 +316,11 @@ describe("createCalendarEvent", () => {
           start_time: { timestamp: "1747371600", timezone: "Asia/Shanghai" },
           end_time: { timestamp: "1747375200", timezone: "Asia/Shanghai" },
           app_link: "https://www.feishu.cn/calendar/event/xxx",
+          vchat: {
+            vc_type: "vc",
+            meeting_url: "https://vc.feishu.cn/j/123456",
+            vc_info: { unique_id: "uid_abc", meeting_no: "123456" },
+          },
         },
       },
     });
@@ -285,7 +333,31 @@ describe("createCalendarEvent", () => {
     expect(result.event_id).toBe("event_xyz");
     expect(result.calendar_id).toBe("cal_feishu_default");
     expect(result.app_link).toBe("https://www.feishu.cn/calendar/event/xxx");
-    expect(typeof result.note).toBe("string");
+    expect(result.meeting_url).toBe("https://vc.feishu.cn/j/123456");
+    expect(result.meeting_no).toBe("123456");
+    expect(result.vchat_enabled).toBe(true);
+  });
+
+  it("passes vc_type=vc to SDK when enable_vchat=true", async () => {
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: { event: { event_id: "ev1", summary: "X", start_time: { timezone: "Asia/Shanghai" } } },
+    });
+    const client = createFeishuClientMock();
+    await createCalendarEvent(client, "cal_id", { ...entry, enable_vchat: true });
+    const callArg = calendarEventCreateMock.mock.calls[0][0];
+    expect(callArg.data.vchat).toEqual({ vc_type: "vc" });
+  });
+
+  it("passes vc_type=no_meeting to SDK when enable_vchat=false", async () => {
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: { event: { event_id: "ev2", summary: "X", start_time: { timezone: "Asia/Shanghai" } } },
+    });
+    const client = createFeishuClientMock();
+    await createCalendarEvent(client, "cal_id", { ...entry, enable_vchat: false });
+    const callArg = calendarEventCreateMock.mock.calls[0][0];
+    expect(callArg.data.vchat).toEqual({ vc_type: "no_meeting" });
   });
 
   it("returns error when code=0 but event_id is absent", async () => {
@@ -614,5 +686,54 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
     const result = await tool.execute("list-call", { action: "list_calendars" });
     const parsed = JSON.parse(result.content[0].text) as { calendars: unknown[] };
     expect(parsed.calendars).toHaveLength(1);
+  });
+
+  it("draft preview contains 飞书会议 by default", async () => {
+    const tool = await buildTool();
+    const result = await tool.execute("draft-call", {
+      action: "create_event_draft",
+      title: "产品讨论",
+      start_time: "2026-05-16T15:00:00+08:00",
+      end_time: "2026-05-16T16:00:00+08:00",
+    });
+    const parsed = JSON.parse(result.content[0].text) as { preview: string };
+    expect(parsed.preview).toContain("视频会议：飞书会议");
+  });
+
+  it("draft preview contains 视频会议：无 when enable_vchat=false", async () => {
+    const tool = await buildTool();
+    const result = await tool.execute("draft-call", {
+      action: "create_event_draft",
+      title: "线下会议",
+      start_time: "2026-05-16T15:00:00+08:00",
+      end_time: "2026-05-16T16:00:00+08:00",
+      enable_vchat: false,
+    });
+    const parsed = JSON.parse(result.content[0].text) as { preview: string };
+    expect(parsed.preview).toContain("视频会议：无");
+  });
+
+  it("create_event passes vchat to SDK and returns meeting_url", async () => {
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: {
+        event: {
+          event_id: "event_vc1",
+          summary: "产品讨论",
+          start_time: { timezone: "Asia/Shanghai" },
+          vchat: { vc_type: "vc", meeting_url: "https://vc.feishu.cn/j/999" },
+        },
+      },
+    });
+    const tool = await buildTool();
+    const draftId = await createDraft(tool);
+    const result = await tool.execute("call-vc", { action: "create_event", draft_id: draftId });
+    const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(parsed.success).toBe(true);
+    expect(parsed.meeting_url).toBe("https://vc.feishu.cn/j/999");
+    expect(parsed.vchat_enabled).toBe(true);
+    // SDK was called with vchat.vc_type="vc"
+    const callArg = calendarEventCreateMock.mock.calls[0][0];
+    expect(callArg.data.vchat).toEqual({ vc_type: "vc" });
   });
 });

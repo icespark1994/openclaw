@@ -48,6 +48,13 @@ export const FeishuCalendarSchema = Type.Object({
         "pass the exact draft_id returned by the previous create_event_draft call.",
     }),
   ),
+  enable_vchat: Type.Optional(
+    Type.Boolean({
+      description:
+        "Whether to add a Feishu video conference to the event (default: true). " +
+        "Set to false only when the user explicitly requests a meeting without video conference.",
+    }),
+  ),
 });
 
 export type FeishuCalendarParams = Static<typeof FeishuCalendarSchema>;
