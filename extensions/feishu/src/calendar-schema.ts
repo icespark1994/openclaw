@@ -41,6 +41,13 @@ export const FeishuCalendarSchema = Type.Object({
     }),
   ),
   description: Type.Optional(Type.String({ description: "Event description (optional)" })),
+  draft_id: Type.Optional(
+    Type.String({
+      description:
+        "Draft ID from create_event_draft. Required for create_event — " +
+        "pass the exact draft_id returned by the previous create_event_draft call.",
+    }),
+  ),
 });
 
 export type FeishuCalendarParams = Static<typeof FeishuCalendarSchema>;
