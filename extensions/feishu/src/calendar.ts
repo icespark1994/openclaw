@@ -203,15 +203,27 @@ export async function createCalendarEvent(
   }
 
   const event = res.data?.event;
+  // Guard: a code=0 response without event_id means the event was not persisted.
+  if (!event?.event_id) {
+    return {
+      error:
+        "Feishu Calendar API returned success (code=0) but no event_id was present in the response. " +
+        "The event may not have been created. Please try again.",
+    };
+  }
   return {
     success: true,
-    event_id: event?.event_id,
+    event_id: event.event_id,
     calendar_id: calendarId,
-    title: event?.summary ?? entry.title,
+    title: event.summary ?? entry.title,
     start_time: entry.start_time,
     end_time: entry.end_time,
-    timezone: event?.start_time?.timezone ?? entry.timezone,
-    ...(event?.app_link ? { app_link: event.app_link } : {}),
+    timezone: event.start_time?.timezone ?? entry.timezone,
+    ...(event.app_link ? { app_link: event.app_link } : {}),
+    note:
+      "Event created on the Ainetrix_Master_Bot calendar. " +
+      "To see it in your Feishu Calendar, subscribe to 'Ainetrix_Master_Bot' calendar " +
+      "or open the app_link directly.",
   };
 }
 

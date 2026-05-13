@@ -285,6 +285,15 @@ describe("createCalendarEvent", () => {
     expect(result.event_id).toBe("event_xyz");
     expect(result.calendar_id).toBe("cal_feishu_default");
     expect(result.app_link).toBe("https://www.feishu.cn/calendar/event/xxx");
+    expect(typeof result.note).toBe("string");
+  });
+
+  it("returns error when code=0 but event_id is absent", async () => {
+    calendarEventCreateMock.mockResolvedValue({ code: 0, data: { event: {} } });
+    const client = createFeishuClientMock();
+    const result = (await createCalendarEvent(client, "cal_id", entry)) as Record<string, unknown>;
+    expect(result.error).toBeDefined();
+    expect(String(result.error)).toContain("no event_id");
   });
 });
 

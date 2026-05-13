@@ -106,7 +106,14 @@ If the tool returns an error mentioning "not authorized" or "AINETRIX_CALENDAR_A
 }
 ```
 
-**Bot (to user):** If `success: true`, report the `event_id` and creation success. Otherwise report the error.
+**Bot (to user):** If `success: true`, report:
+
+- 创建成功 ✅
+- event_id（可用于追踪）
+- **app_link**（如有）作为可点击链接，方便用户直接在飞书客户端打开日程
+- 提示：本次日程创建在 **Ainetrix_Master_Bot 的日历**（不是用户个人日历）。如在飞书日历中看不到，请在飞书日历 → 其他日历 → 搜索「Ainetrix_Master_Bot」并订阅。
+
+If the tool returns an error, report the error message to the user.
 
 ## Attendees
 
