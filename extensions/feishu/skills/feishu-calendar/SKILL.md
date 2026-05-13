@@ -17,13 +17,15 @@ metadata:
 ## Confirmation Requirement (MANDATORY)
 
 **NEVER call `create_event` without explicit user confirmation.**
+**NEVER claim "已创建" or "已记录" unless `create_event` returns `success: true`.**
 
 The required flow is:
 
 1. Call `feishu_calendar` with `action: "create_event_draft"` and all event parameters.
 2. Show the returned `preview` text to the user verbatim.
 3. Wait for the user to reply with 确认 / confirm / yes (or equivalent clear affirmation).
-4. Only then call `feishu_calendar` with `action: "create_event"`.
+4. Call `feishu_calendar` with `action: "create_event"`, passing the **exact `draft_id`** from step 1.
+5. Report the result to the user. Only say "创建成功" if the tool returns `success: true`.
 
 If the user does not confirm, do not create. If the user edits the details, call `create_event_draft` again with the updated parameters and repeat the confirmation step.
 
@@ -58,24 +60,22 @@ Returns available calendars with their `calendar_id`. Use this when the user ask
 }
 ```
 
-Returns a `preview` string. Show it to the user as-is before asking for confirmation.
+Returns a `preview` string and a `draft_id`. Show the preview to the user as-is before asking for confirmation. **Save the `draft_id`** — you must pass it to `create_event`.
 
 ### create_event
 
-**Only call after user confirms the draft.**
+**Only call after user confirms the draft. Must include `draft_id` from the previous `create_event_draft` call.**
 
 ```json
 {
   "action": "create_event",
-  "title": "...",
-  "start_time": "...",
-  "end_time": "...",
-  "timezone": "Asia/Shanghai",
-  "calendar_id": "..."
+  "draft_id": "<draft_id from create_event_draft>"
 }
 ```
 
-> Note: In the current stage (C3), `create_event` returns a stub response. Real write will be enabled in Stage C4.
+The draft is valid for 30 minutes. If it expires or was already used, call `create_event_draft` again.
+
+If the tool returns an error mentioning "not authorized" or "AINETRIX_CALENDAR_ALLOWED_USERS", tell the user they do not have write permission and to contact the administrator.
 
 ## Example Conversation
 
@@ -93,11 +93,20 @@ Returns a `preview` string. Show it to the user as-is before asking for confirma
 }
 ```
 
-**Bot (to user):** Show the `preview` field from the tool response.
+**Bot (to user):** Show the `preview` field from the tool response verbatim.
 
 **User:** 确认
 
-**Bot (internal):** Call `create_event` with the same parameters. Report the result.
+**Bot (internal):** Call `create_event` with the `draft_id` from the previous response:
+
+```json
+{
+  "action": "create_event",
+  "draft_id": "<draft_id returned by create_event_draft>"
+}
+```
+
+**Bot (to user):** If `success: true`, report the `event_id` and creation success. Otherwise report the error.
 
 ## Attendees
 
@@ -107,9 +116,11 @@ Phase 1 does not support inviting attendees. If the user asks to invite others, 
 
 The default calendar is set via `AINETRIX_FEISHU_DEFAULT_CALENDAR_ID`. If this variable is absent, the skill will be inactive. Use `list_calendars` to find the correct calendar ID if needed.
 
+Write access is restricted by `AINETRIX_CALENDAR_ALLOWED_USERS`. If not configured, `create_event` will be rejected.
+
 ## Required Feishu App Permissions
 
-| Scope                           | Required for              |
-| ------------------------------- | ------------------------- |
-| `calendar:calendar:readonly`    | `list_calendars`          |
-| `calendar:calendar.event:write` | `create_event` (Stage C4) |
+| Scope                           | Required for                       |
+| ------------------------------- | ---------------------------------- |
+| `calendar:calendar:readonly`    | `list_calendars`                   |
+| `calendar:calendar.event:write` | `create_event` (Stage C4 — active) |
