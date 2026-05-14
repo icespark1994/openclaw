@@ -12,6 +12,21 @@ import { createFeishuToolClient } from "./tool-account.js";
 const DEFAULT_TIMEZONE = "Asia/Shanghai";
 const DRAFT_TTL_MS = 30 * 60 * 1000; // 30 minutes
 
+/**
+ * Return current date in the given IANA timezone as YYYY-MM-DD.
+ * Uses Intl.DateTimeFormat so it is TZ-env-independent even in UTC containers.
+ */
+export function getCurrentDateInTimezone(timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "??";
+  return `${get("year")}-${get("month")}-${get("day")}`;
+}
+
 function json(data: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -78,6 +93,8 @@ export type CalendarEventDraft = {
   description: string;
   enable_vchat: boolean;
   attendees: never[];
+  /** Current date in the event timezone — lets the LLM verify its relative-date resolution. */
+  current_date_in_timezone: string;
   preview: string;
 };
 
@@ -92,6 +109,7 @@ export function buildEventDraft(params: {
 }): CalendarEventDraft {
   const tz = params.timezone?.trim() || DEFAULT_TIMEZONE;
   const enableVchat = params.enable_vchat !== false; // default true
+  const currentDate = getCurrentDateInTimezone(tz);
   return {
     title: params.title,
     start_time: params.start_time,
@@ -101,6 +119,7 @@ export function buildEventDraft(params: {
     description: params.description ?? "",
     enable_vchat: enableVchat,
     attendees: [],
+    current_date_in_timezone: currentDate,
     preview: formatDraftPreview({
       title: params.title,
       start_time: params.start_time,
@@ -108,6 +127,7 @@ export function buildEventDraft(params: {
       timezone: tz,
       calendar_id: params.calendar_id,
       enable_vchat: enableVchat,
+      current_date: currentDate,
     }),
   };
 }
@@ -119,6 +139,7 @@ function formatDraftPreview(params: {
   timezone: string;
   calendar_id: string;
   enable_vchat: boolean;
+  current_date: string;
 }): string {
   const vchatLine = params.enable_vchat ? "📹 视频会议：飞书会议\n" : "📹 视频会议：无\n";
   return (
@@ -128,7 +149,8 @@ function formatDraftPreview(params: {
     `🕑 结束：${params.end_time}（${params.timezone}）\n` +
     `📆 日历 ID：${params.calendar_id}\n` +
     vchatLine +
-    `👥 参与人：仅你（本阶段不支持邀请他人）\n\n` +
+    `👥 参与人：仅你（本阶段不支持邀请他人）\n` +
+    `🗓️ 日期解析基准：${params.timezone}，今天是 ${params.current_date}\n\n` +
     `请回复「确认」/ "confirm" / "yes" 后创建日程。`
   );
 }

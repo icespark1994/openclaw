@@ -11,6 +11,7 @@ import {
   buildEventDraft,
   createCalendarEvent,
   draftStore,
+  getCurrentDateInTimezone,
   isUserAllowed,
   listCalendars,
   parseAllowedUsers,
@@ -133,6 +134,138 @@ describe("buildEventDraft", () => {
       description: "Agenda: review Q1 results",
     });
     expect(draft.description).toBe("Agenda: review Q1 results");
+  });
+});
+
+// ── getCurrentDateInTimezone ──────────────────────────────────────────────────
+
+describe("getCurrentDateInTimezone", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns Asia/Shanghai date when UTC midnight has not yet crossed midnight in Shanghai", () => {
+    // 2026-05-14T15:00:00Z = 2026-05-14 23:00 Shanghai (still May 14)
+    vi.setSystemTime(new Date("2026-05-14T15:00:00Z"));
+    expect(getCurrentDateInTimezone("Asia/Shanghai")).toBe("2026-05-14");
+  });
+
+  it("returns Asia/Shanghai date one day ahead of UTC when UTC is before Shanghai midnight", () => {
+    // 2026-05-14T17:00:00Z = 2026-05-15 01:00 Shanghai (already May 15)
+    vi.setSystemTime(new Date("2026-05-14T17:00:00Z"));
+    expect(getCurrentDateInTimezone("Asia/Shanghai")).toBe("2026-05-15");
+  });
+
+  it("returns correct date for a UTC container running midnight UTC on May 14", () => {
+    // 2026-05-14T00:00:00Z = 2026-05-14 08:00 Shanghai
+    vi.setSystemTime(new Date("2026-05-14T00:00:00Z"));
+    expect(getCurrentDateInTimezone("Asia/Shanghai")).toBe("2026-05-14");
+  });
+
+  it("returns YYYY-MM-DD format", () => {
+    vi.setSystemTime(new Date("2026-01-05T10:00:00Z"));
+    const result = getCurrentDateInTimezone("Asia/Shanghai");
+    expect(result).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+});
+
+// ── buildEventDraft — date basis ──────────────────────────────────────────────
+
+describe("buildEventDraft — current_date_in_timezone and preview date basis", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    // Mock: 2026-05-14T01:00:00Z = 2026-05-14 09:00 Asia/Shanghai → today is 2026-05-14
+    vi.setSystemTime(new Date("2026-05-14T01:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns current_date_in_timezone matching Asia/Shanghai today", () => {
+    const draft = buildEventDraft({
+      title: "线下会议",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      calendar_id: "cal_abc",
+    });
+    expect(draft.current_date_in_timezone).toBe("2026-05-14");
+  });
+
+  it("preview contains date basis line with today's Shanghai date", () => {
+    const draft = buildEventDraft({
+      title: "线下会议",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      calendar_id: "cal_abc",
+    });
+    expect(draft.preview).toContain("日期解析基准：Asia/Shanghai，今天是 2026-05-14");
+  });
+
+  it("明天 scenario: start on 2026-05-15 with today=2026-05-14 → current_date_in_timezone is 2026-05-14", () => {
+    // User said "明天下午4点"; LLM should pass 2026-05-15T16:00:00+08:00
+    const draft = buildEventDraft({
+      title: "办公室讨论",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      calendar_id: "cal_abc",
+    });
+    expect(draft.current_date_in_timezone).toBe("2026-05-14");
+    // start_time is one day after today — correct for "明天"
+    expect(draft.start_time).toBe("2026-05-15T16:00:00+08:00");
+    expect(draft.preview).toContain("2026-05-15T16:00:00+08:00");
+    expect(draft.preview).toContain("今天是 2026-05-14");
+  });
+
+  it("今天 scenario: start on 2026-05-14 with today=2026-05-14 → current_date matches", () => {
+    const draft = buildEventDraft({
+      title: "今天会议",
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      calendar_id: "cal_abc",
+    });
+    expect(draft.current_date_in_timezone).toBe("2026-05-14");
+    expect(draft.preview).toContain("2026-05-14T16:00:00+08:00");
+    expect(draft.preview).toContain("今天是 2026-05-14");
+  });
+
+  it("后天 scenario: start on 2026-05-16 with today=2026-05-14", () => {
+    const draft = buildEventDraft({
+      title: "后天会议",
+      start_time: "2026-05-16T16:00:00+08:00",
+      end_time: "2026-05-16T16:30:00+08:00",
+      calendar_id: "cal_abc",
+    });
+    expect(draft.current_date_in_timezone).toBe("2026-05-14");
+    expect(draft.start_time).toBe("2026-05-16T16:00:00+08:00");
+  });
+
+  it("本周五 on Thursday 2026-05-14 → start should be 2026-05-15", () => {
+    // 2026-05-14 is a Thursday; Friday = 2026-05-15
+    const draft = buildEventDraft({
+      title: "本周五会议",
+      start_time: "2026-05-15T14:00:00+08:00",
+      end_time: "2026-05-15T15:00:00+08:00",
+      calendar_id: "cal_abc",
+    });
+    expect(draft.current_date_in_timezone).toBe("2026-05-14");
+    expect(draft.start_time).toBe("2026-05-15T14:00:00+08:00");
+    expect(draft.preview).toContain("今天是 2026-05-14");
+  });
+
+  it("preview format: date basis line appears between attendees line and confirm prompt", () => {
+    const draft = buildEventDraft({
+      title: "Test",
+      start_time: "2026-05-15T10:00:00+08:00",
+      end_time: "2026-05-15T11:00:00+08:00",
+      calendar_id: "cal_abc",
+    });
+    const dateBasisIdx = draft.preview.indexOf("日期解析基准");
+    const confirmIdx = draft.preview.indexOf("确认");
+    expect(dateBasisIdx).toBeGreaterThan(-1);
+    expect(confirmIdx).toBeGreaterThan(dateBasisIdx);
   });
 });
 
@@ -719,6 +852,36 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
     const result = await tool.execute("list-call", { action: "list_calendars" });
     const parsed = JSON.parse(result.content[0].text) as { calendars: unknown[] };
     expect(parsed.calendars).toHaveLength(1);
+  });
+
+  it("create_event_draft response includes current_date_in_timezone", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T01:00:00Z")); // Shanghai = 2026-05-14
+    const tool = await buildTool();
+    const result = await tool.execute("draft-date", {
+      action: "create_event_draft",
+      title: "日期基准测试",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+    });
+    const parsed = JSON.parse(result.content[0].text) as { draft: Record<string, unknown> };
+    expect(parsed.draft.current_date_in_timezone).toBe("2026-05-14");
+    vi.useRealTimers();
+  });
+
+  it("create_event_draft preview contains date basis line", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T01:00:00Z")); // Shanghai = 2026-05-14
+    const tool = await buildTool();
+    const result = await tool.execute("draft-preview-date", {
+      action: "create_event_draft",
+      title: "Preview日期测试",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+    });
+    const parsed = JSON.parse(result.content[0].text) as { preview: string };
+    expect(parsed.preview).toContain("日期解析基准：Asia/Shanghai，今天是 2026-05-14");
+    vi.useRealTimers();
   });
 
   it("draft preview contains 飞书会议 by default", async () => {

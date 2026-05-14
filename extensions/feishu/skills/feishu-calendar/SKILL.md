@@ -41,9 +41,28 @@ If the user does not confirm, do not create. If the user edits the details, call
 ## Date and Time Handling
 
 - **Always resolve relative dates** ("本周五", "明天", "下午两点") to absolute ISO 8601 datetime before calling any tool.
-- Use the user's local timezone or default to `Asia/Shanghai`.
-- Show the resolved absolute datetime in the draft so the user can verify.
-- Example: "本周五下午一点" → `2026-05-15T13:00:00+08:00`
+- **Timezone basis: always use `Asia/Shanghai`** — do NOT use UTC or server local time. The server/container may run in UTC; ignore that. Chinese relative expressions ("今天", "明天", "后天", "本周五", "下周一") must be resolved using the Asia/Shanghai current date.
+- Show the resolved absolute datetime in the draft preview so the user can verify.
+
+### Verifying date resolution with `current_date_in_timezone`
+
+Every `create_event_draft` response includes `current_date_in_timezone` (e.g. `"2026-05-14"`) — the actual current date in Asia/Shanghai at the time the tool ran.  
+The draft preview also displays: `🗓️ 日期解析基准：Asia/Shanghai，今天是 YYYY-MM-DD`
+
+**After calling `create_event_draft`, always check:**
+
+| User said            | Draft start date | `current_date_in_timezone` | Action                                |
+| -------------------- | ---------------- | -------------------------- | ------------------------------------- |
+| "明天"               | `2026-05-14`     | `2026-05-14`               | ❌ Wrong — re-draft with `2026-05-15` |
+| "明天"               | `2026-05-15`     | `2026-05-14`               | ✅ Correct                            |
+| "今天"               | `2026-05-14`     | `2026-05-14`               | ✅ Correct                            |
+| "后天"               | `2026-05-16`     | `2026-05-14`               | ✅ Correct                            |
+| "本周五" on Thursday | `2026-05-15`     | `2026-05-14`               | ✅ Correct                            |
+
+If the start date equals `current_date_in_timezone` but the user said "明天" or "后天", **do not confirm with the user** — silently re-call `create_event_draft` with the corrected date and show the new preview.
+
+**Example:** Today (Asia/Shanghai) = `2026-05-14`. User says "明天下午4点".
+→ Correct `start_time`: `2026-05-15T16:00:00+08:00`
 
 ## Tool Actions
 
@@ -96,14 +115,14 @@ If the tool returns an error mentioning "not authorized" or "AINETRIX_CALENDAR_A
 
 **User:** 帮我创建一个日程，明天下午3点，产品讨论，1小时
 
-**Bot (internal):** Call `create_event_draft`:
+**Bot (internal):** Today (Asia/Shanghai) = `2026-05-14`, so "明天" = `2026-05-15`. Call `create_event_draft`:
 
 ```json
 {
   "action": "create_event_draft",
   "title": "产品讨论",
-  "start_time": "2026-05-14T15:00:00+08:00",
-  "end_time": "2026-05-14T16:00:00+08:00",
+  "start_time": "2026-05-15T15:00:00+08:00",
+  "end_time": "2026-05-15T16:00:00+08:00",
   "timezone": "Asia/Shanghai",
   "enable_vchat": true
 }
