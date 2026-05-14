@@ -3,12 +3,22 @@ import type * as Lark from "@larksuiteoapi/node-sdk";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/feishu";
 import { listEnabledFeishuAccounts } from "./accounts.js";
 import { FeishuCalendarSchema, type FeishuCalendarParams } from "./calendar-schema.js";
+import {
+  type ContactRegistry,
+  isRegistryStale,
+  loadRegistry,
+  registryAgeDays,
+  resolveContact,
+  syncContactsFromFeishu,
+} from "./contact-registry.js";
 import { createFeishuToolClient } from "./tool-account.js";
 
 // ── Required Feishu app scopes ───────────────────────────────────────────────
 // calendar:calendar:readonly             — list_calendars
 // calendar:calendar.event:write          — create_event
 // calendar:calendar.event.attendee:write — add attendees (C5)
+// contact:contact:readonly               — sync_contacts: scope.list (C6)
+// contact:user.base:readonly             — sync_contacts: user.batch (C6)
 
 const DEFAULT_TIMEZONE = "Asia/Shanghai";
 const DRAFT_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -230,15 +240,19 @@ export function detectOfflineMeetingIntent(originalText: string | undefined): Of
 export type AttendeeEntry = {
   /** Display name as the user wrote it (or the LLM-provided name). */
   name: string;
-  /** Feishu open_id, present only when the name was resolved via the env map. */
+  /** Feishu open_id, present only when resolved. */
   open_id?: string;
   /**
    * resolved → has open_id, will be invited on create_event
-   * unresolved → no mapping found; will NOT be invited
+   * unresolved → no mapping found, OR multiple candidates in registry; will NOT be invited
    */
   status: "resolved" | "unresolved";
-  /** Where the resolution came from. Phase 1: only env_map. */
-  source?: "env_map";
+  /** Where the resolution came from. C5 added env_map; C6 added contact_registry + explicit_open_id. */
+  source?: "explicit_open_id" | "env_map" | "contact_registry";
+  /** Why the name is unresolved (C6). */
+  reason?: "no_match" | "multiple_candidates";
+  /** Candidate display names when status=unresolved AND reason=multiple_candidates (C6). */
+  candidate_names?: string[];
 };
 
 /**
@@ -310,8 +324,12 @@ const NAME_SPLIT_RE = /[、,，]|\s+and\s+|\s+和\s+|\s+与\s+/iu;
 //    "明天下午4点" contain 数字/digits and pass; the digit-rejection rule below
 //    catches them).
 const NAME_TOKEN_RE = /^[一-龥A-Za-z][一-龥A-Za-z_\-]{0,23}$/u;
+// Allow plain email addresses through as well — the registry resolver does
+// email-based lookup, so accepting "peter@ainetrix.ai" here is useful.
+const EMAIL_TOKEN_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/u;
 
 function isNameLike(token: string): boolean {
+  if (EMAIL_TOKEN_RE.test(token)) return true;
   if (!NAME_TOKEN_RE.test(token)) return false;
   // Block action verbs and common Chinese clause words that occasionally slip
   // through capture.
@@ -348,59 +366,94 @@ export function extractAttendeeNamesFromText(originalText: string | undefined): 
 }
 
 /**
- * Resolve a list of name strings against the env map.
- * Names already present in `providedAttendees` (with open_id) are kept as-is.
+ * Resolve a list of name strings into attendees, in this priority order:
+ *   1. Caller-provided open_id  → explicit_open_id
+ *   2. AINETRIX_CALENDAR_ATTENDEE_MAP exact name match → env_map
+ *   3. Contact registry exact match (name / display_name / email) → contact_registry
+ *   4. Multiple registry candidates → unresolved (reason: multiple_candidates)
+ *   5. No match anywhere → unresolved (reason: no_match)
+ *
+ * Names already present in `provided` (with open_id) are kept as-is.
  */
 export function resolveAttendees(params: {
   original_text: string | undefined;
   provided: Array<{ name?: string; open_id?: string }> | undefined;
   map: Map<string, string>;
+  registry?: ContactRegistry | null;
 }): AttendeeEntry[] {
   const out: AttendeeEntry[] = [];
   const seenOpenIds = new Set<string>();
   const seenNameKeys = new Set<string>();
 
-  const pushResolved = (name: string, openId: string) => {
+  const pushResolved = (
+    name: string,
+    openId: string,
+    source: "explicit_open_id" | "env_map" | "contact_registry",
+  ) => {
     if (seenOpenIds.has(openId)) return;
     seenOpenIds.add(openId);
     seenNameKeys.add(name.toLowerCase());
-    out.push({ name, open_id: openId, status: "resolved", source: "env_map" });
+    out.push({ name, open_id: openId, status: "resolved", source });
   };
 
-  const pushUnresolved = (name: string) => {
+  const pushUnresolved = (
+    name: string,
+    reason: "no_match" | "multiple_candidates",
+    candidates?: string[],
+  ) => {
     const key = name.toLowerCase();
     if (seenNameKeys.has(key)) return;
     seenNameKeys.add(key);
-    out.push({ name, status: "unresolved" });
+    out.push({
+      name,
+      status: "unresolved",
+      reason,
+      ...(candidates && candidates.length > 0 ? { candidate_names: candidates } : {}),
+    });
   };
 
-  // 1) LLM-provided attendees come first. If open_id is set, trust it (Phase 1
-  //    only accepts open_id — no email / chat_id / user_id passthrough).
+  /** Resolve a single name through env map → registry. */
+  const resolveOne = (name: string) => {
+    // 2) env map
+    const mapped = params.map.get(name.toLowerCase());
+    if (mapped) {
+      pushResolved(name, mapped, "env_map");
+      return;
+    }
+    // 3) contact registry
+    if (params.registry) {
+      const r = resolveContact(params.registry, name);
+      if (r.kind === "unique") {
+        pushResolved(name, r.user.open_id, "contact_registry");
+        return;
+      }
+      if (r.kind === "multiple") {
+        pushUnresolved(
+          name,
+          "multiple_candidates",
+          r.candidates.map((u) => u.display_name ?? u.name),
+        );
+        return;
+      }
+    }
+    pushUnresolved(name, "no_match");
+  };
+
+  // 1) LLM-provided attendees come first. open_id wins over name lookup.
   for (const a of params.provided ?? []) {
     const name = (a.name ?? "").trim() || "(unnamed)";
     const oid = a.open_id?.trim();
     if (oid) {
-      pushResolved(name, oid);
+      pushResolved(name, oid, "explicit_open_id");
       continue;
     }
-    // Try resolving the provided name through the env map.
-    const mapped = params.map.get(name.toLowerCase());
-    if (mapped) {
-      pushResolved(name, mapped);
-    } else {
-      pushUnresolved(name);
-    }
+    resolveOne(name);
   }
 
-  // 2) Names extracted from original_text — only add when not already covered.
+  // 2) Names extracted from original_text — skip duplicates from step 1.
   for (const name of extractAttendeeNamesFromText(params.original_text)) {
     if (seenNameKeys.has(name.toLowerCase())) continue;
-    const mapped = params.map.get(name.toLowerCase());
-    if (mapped) {
-      pushResolved(name, mapped);
-    } else {
-      pushUnresolved(name);
-    }
+    resolveOne(name);
   }
 
   return out;
@@ -496,10 +549,12 @@ export function buildEventDraft(params: {
   enable_vchat?: boolean;
   /** User's verbatim request — used for code-level relative-date correction (C4.3). */
   original_text?: string;
-  /** LLM-provided attendees (name + optional open_id). Tool re-resolves through env map. */
+  /** LLM-provided attendees (name + optional open_id). Tool re-resolves through env map / registry. */
   attendees?: Array<{ name?: string; open_id?: string }>;
   /** Env-var-derived name → open_id map used to resolve attendees (C5). */
   attendee_map?: Map<string, string>;
+  /** Ainetrix contact registry loaded from disk (C6). Used after env_map. */
+  contact_registry?: ContactRegistry | null;
 }): CalendarEventDraft {
   const tz = params.timezone?.trim() || DEFAULT_TIMEZONE;
   let enableVchat = params.enable_vchat !== false; // default true
@@ -532,13 +587,15 @@ export function buildEventDraft(params: {
     vchatAutoDisabledReason = `Detected offline meeting intent ("${offline.matched_keyword}") in original_text`;
   }
 
-  // C5: resolve attendees through env map. LLM-provided attendees are merged
-  // with names extracted from original_text. Unresolved names are kept on the
-  // draft for transparency but will NOT be invited at create_event.
+  // C5/C6: resolve attendees through env map (primary) then contact registry
+  // (secondary). LLM-provided attendees are merged with names extracted from
+  // original_text. Unresolved / multi-candidate names are kept on the draft
+  // for transparency but will NOT be invited at create_event.
   const attendees = resolveAttendees({
     original_text: params.original_text,
     provided: params.attendees,
     map: params.attendee_map ?? new Map(),
+    registry: params.contact_registry ?? null,
   });
 
   return {
@@ -565,6 +622,7 @@ export function buildEventDraft(params: {
       hasOriginalText,
       attendees,
       vchat_auto_disabled_reason: vchatAutoDisabledReason,
+      registry: params.contact_registry ?? null,
     }),
   };
 }
@@ -581,6 +639,7 @@ function formatDraftPreview(params: {
   hasOriginalText: boolean;
   vchat_auto_disabled_reason?: string;
   attendees: AttendeeEntry[];
+  registry?: ContactRegistry | null;
 }): string {
   let vchatLine = params.enable_vchat ? "📹 视频会议：飞书会议\n" : "📹 视频会议：无\n";
   if (!params.enable_vchat && params.vchat_auto_disabled_reason) {
@@ -596,20 +655,48 @@ function formatDraftPreview(params: {
     correctionLine = `ℹ️ 未提供原始文本（original_text），无法进行相对日期代码级校验\n`;
   }
 
+  const sourceLabel = (s: AttendeeEntry["source"]): string => {
+    switch (s) {
+      case "explicit_open_id":
+        return "explicit_open_id";
+      case "env_map":
+        return "env_map";
+      case "contact_registry":
+        return "contact_registry";
+      default:
+        return "unknown";
+    }
+  };
+
   const resolved = params.attendees.filter((a) => a.status === "resolved");
   const unresolved = params.attendees.filter((a) => a.status === "unresolved");
   let attendeesBlock: string;
   if (resolved.length === 0 && unresolved.length === 0) {
     attendeesBlock = `👥 参与人：仅你（未指定其他参会人）\n`;
   } else {
-    const resolvedNames = resolved.map((a) => a.name).join("、") || "（无）";
-    attendeesBlock = `👥 已解析参会人（确认后将邀请）：${resolvedNames}\n`;
+    const resolvedSummary = resolved.length
+      ? resolved.map((a) => `${a.name}（${sourceLabel(a.source)}）`).join("、")
+      : "（无）";
+    attendeesBlock = `👥 已解析参会人（确认后将邀请）：${resolvedSummary}\n`;
     if (unresolved.length > 0) {
-      const unresolvedNames = unresolved.map((a) => a.name).join("、");
-      attendeesBlock +=
-        `⚠️ 未解析参会人：${unresolvedNames}\n` +
-        `   ↳ 这些人未在 AINETRIX_CALENDAR_ATTENDEE_MAP 中找到映射，确认后将 *不会* 被邀请。\n`;
+      const lines = unresolved.map((a) => {
+        if (a.reason === "multiple_candidates") {
+          const cands = a.candidate_names?.join("、") ?? "";
+          return `   • ${a.name}：通讯录中有多个候选（${cands}），请明确指定`;
+        }
+        return `   • ${a.name}：未在 env_map / 通讯录中找到`;
+      });
+      attendeesBlock += `⚠️ 未解析参会人（确认后将 *不会* 被邀请）：\n${lines.join("\n")}\n`;
     }
+  }
+
+  // C6: stale-registry hint. Soft warning; doesn't block.
+  let registryHint = "";
+  if (params.registry && isRegistryStale(params.registry)) {
+    const age = registryAgeDays(params.registry);
+    registryHint =
+      `ℹ️ Ainetrix 通讯录缓存已 ${age.toFixed(1)} 天未更新，` +
+      `建议管理员运行 sync_contacts 同步最新成员。\n`;
   }
 
   return (
@@ -620,6 +707,7 @@ function formatDraftPreview(params: {
     `📆 日历 ID：${params.calendar_id}\n` +
     vchatLine +
     attendeesBlock +
+    registryHint +
     `🗓️ 日期解析基准：${params.timezone}，今天是 ${params.current_date}\n` +
     correctionLine +
     `\n请回复「确认」/ "confirm" / "yes" 后创建日程。`
@@ -768,7 +856,14 @@ export async function createCalendarEvent(
       ...attendeeResult.failed,
       ...unresolved.map((a) => ({
         name: a.name,
-        reason: "Unresolved name — not found in AINETRIX_CALENDAR_ATTENDEE_MAP",
+        reason:
+          a.reason === "multiple_candidates"
+            ? `Multiple candidates in contact registry${
+                a.candidate_names && a.candidate_names.length > 0
+                  ? ` (${a.candidate_names.join(", ")})`
+                  : ""
+              }; ask the user to clarify which person to invite.`
+            : "Name not found in AINETRIX_CALENDAR_ATTENDEE_MAP or contact registry.",
       })),
     ],
     ...(attendeeResult.partial_failure ? { attendee_partial_failure: true } : {}),
@@ -910,6 +1005,19 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
     );
   }
 
+  // C6: in-memory cache of the contact registry. Refreshed on sync_contacts and
+  // on a best-effort basis at startup so create_event_draft can use it without
+  // a file read per call.
+  let contactRegistry: ContactRegistry | null = null;
+  void (async () => {
+    contactRegistry = await loadRegistry();
+    if (contactRegistry) {
+      api.logger.debug?.(
+        `feishu_calendar: contact registry loaded (${contactRegistry.users.length} users, synced_at=${contactRegistry.synced_at})`,
+      );
+    }
+  })();
+
   const getClient = (params: { accountId?: string } | undefined, defaultAccountId?: string) =>
     createFeishuToolClient({ api, executeParams: params, defaultAccountId });
 
@@ -943,6 +1051,72 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                 return json(await listCalendars(client));
               }
 
+              case "sync_contacts": {
+                // Admin-only: write access required (same check as create_event).
+                if (!isUserAllowed(messageChannel, requesterSenderId, allowedUsers, agentId)) {
+                  return json({
+                    error:
+                      "Not authorized. Only users in AINETRIX_CALENDAR_ALLOWED_USERS can sync contacts.",
+                  });
+                }
+                const client = getClient(p, defaultAccountId);
+                const result = await syncContactsFromFeishu(client);
+                if (result.ok) {
+                  // Refresh in-memory cache so subsequent drafts see the new data.
+                  contactRegistry = await loadRegistry();
+                  api.logger.debug?.(
+                    `feishu_calendar: sync_contacts wrote ${result.synced_users} users to ${result.registry_path}`,
+                  );
+                }
+                return json(result);
+              }
+
+              case "search_contacts": {
+                const query = p.query?.trim();
+                if (!query) {
+                  return json({
+                    error: "Missing required field: query (name or email to look up).",
+                  });
+                }
+                // Always read fresh from disk for search (cheap, avoids stale cache surprises).
+                const reg = (await loadRegistry()) ?? contactRegistry;
+                if (!reg) {
+                  return json({
+                    found: false,
+                    error:
+                      "Contact registry is empty. Run `sync_contacts` first to populate it from Feishu.",
+                  });
+                }
+                const r = resolveContact(reg, query);
+                if (r.kind === "unique") {
+                  return json({
+                    found: true,
+                    match: {
+                      name: r.user.name,
+                      ...(r.user.display_name ? { display_name: r.user.display_name } : {}),
+                      ...(r.user.email ? { email: r.user.email } : {}),
+                      open_id_masked: maskOpenId(r.user.open_id),
+                      status: r.user.status,
+                      matched_by: r.matched_by,
+                    },
+                  });
+                }
+                if (r.kind === "multiple") {
+                  return json({
+                    found: false,
+                    reason: "multiple_candidates",
+                    candidates: r.candidates.map((u) => ({
+                      name: u.name,
+                      ...(u.display_name ? { display_name: u.display_name } : {}),
+                      ...(u.email ? { email: u.email } : {}),
+                      open_id_masked: maskOpenId(u.open_id),
+                      status: u.status,
+                    })),
+                  });
+                }
+                return json({ found: false, reason: "no_match" });
+              }
+
               case "create_event_draft": {
                 const validation = validateDraftParams(p, defaultCalendarId);
                 if (!validation.ok) {
@@ -959,6 +1133,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                   original_text: p.original_text,
                   attendees: p.attendees,
                   attendee_map: attendeeMap,
+                  contact_registry: contactRegistry,
                 });
 
                 const draftId = randomUUID();
@@ -1077,6 +1252,6 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
   );
 
   api.logger.info?.(
-    "feishu_calendar: Registered feishu_calendar (Stage C5 — attendee invitation via AINETRIX_CALENDAR_ATTENDEE_MAP)",
+    "feishu_calendar: Registered feishu_calendar (Stage C6 — contact registry attendee resolution + sync_contacts/search_contacts)",
   );
 }

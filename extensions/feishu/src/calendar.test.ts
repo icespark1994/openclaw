@@ -844,6 +844,317 @@ describe("resolveAttendees", () => {
     expect(r).toHaveLength(1);
     expect(r[0]?.status).toBe("unresolved");
   });
+
+  // ── C6 additions ──
+
+  const mkRegistry = (): import("./contact-registry.js").ContactRegistry => ({
+    synced_at: new Date().toISOString(),
+    users: [
+      {
+        name: "Peter",
+        display_name: "Peter Zhang",
+        email: "peter@ainetrix.ai",
+        open_id: "ou_peter_reg",
+        status: "active",
+      },
+      {
+        name: "Lisa",
+        display_name: "Lisa Wang",
+        email: "lisa@ainetrix.ai",
+        open_id: "ou_lisa_reg",
+        status: "active",
+      },
+      {
+        name: "Common",
+        display_name: "Common A",
+        open_id: "ou_common_a",
+        status: "active",
+      },
+      {
+        name: "Common",
+        display_name: "Common B",
+        open_id: "ou_common_b",
+        status: "active",
+      },
+      {
+        name: "Resigned",
+        open_id: "ou_resigned",
+        status: "resigned",
+      },
+    ],
+  });
+
+  it("falls back to contact registry when env map misses (C6)", () => {
+    const reg = mkRegistry();
+    const r = resolveAttendees({
+      original_text: "邀请 Peter",
+      provided: [],
+      map: new Map(), // empty env map → registry must take over
+      registry: reg,
+    });
+    expect(r).toHaveLength(1);
+    expect(r[0]?.status).toBe("resolved");
+    expect(r[0]?.source).toBe("contact_registry");
+    expect(r[0]?.open_id).toBe("ou_peter_reg");
+  });
+
+  it("env map wins over contact registry (priority)", () => {
+    const reg = mkRegistry();
+    const r = resolveAttendees({
+      original_text: "邀请 Peter",
+      provided: [],
+      map: parseAttendeeMap("Peter=ou_peter_env"),
+      registry: reg,
+    });
+    expect(r[0]?.open_id).toBe("ou_peter_env");
+    expect(r[0]?.source).toBe("env_map");
+  });
+
+  it("explicit open_id wins over both env map and registry (C6)", () => {
+    const reg = mkRegistry();
+    const r = resolveAttendees({
+      original_text: "",
+      provided: [{ name: "Peter", open_id: "ou_explicit_top" }],
+      map: parseAttendeeMap("Peter=ou_peter_env"),
+      registry: reg,
+    });
+    expect(r[0]?.open_id).toBe("ou_explicit_top");
+    expect(r[0]?.source).toBe("explicit_open_id");
+  });
+
+  it("multiple registry candidates leave the attendee unresolved (C6)", () => {
+    const reg = mkRegistry();
+    const r = resolveAttendees({
+      original_text: "邀请 Common",
+      provided: [],
+      map: new Map(),
+      registry: reg,
+    });
+    expect(r).toHaveLength(1);
+    expect(r[0]?.status).toBe("unresolved");
+    expect(r[0]?.reason).toBe("multiple_candidates");
+    expect(r[0]?.candidate_names).toEqual(["Common A", "Common B"]);
+    expect(r[0]?.open_id).toBeUndefined();
+  });
+
+  it("resolves via email when query is an email (C6)", () => {
+    const reg = mkRegistry();
+    const r = resolveAttendees({
+      original_text: "邀请 peter@ainetrix.ai",
+      provided: [],
+      map: new Map(),
+      registry: reg,
+    });
+    expect(r[0]?.source).toBe("contact_registry");
+    expect(r[0]?.open_id).toBe("ou_peter_reg");
+  });
+
+  it("resolves via display_name (C6)", () => {
+    const reg = mkRegistry();
+    const r = resolveAttendees({
+      original_text: "",
+      provided: [{ name: "Lisa Wang" }],
+      map: new Map(),
+      registry: reg,
+    });
+    expect(r[0]?.source).toBe("contact_registry");
+    expect(r[0]?.open_id).toBe("ou_lisa_reg");
+  });
+
+  it("ignores resigned users in registry lookup (C6)", () => {
+    const reg = mkRegistry();
+    const r = resolveAttendees({
+      original_text: "邀请 Resigned",
+      provided: [],
+      map: new Map(),
+      registry: reg,
+    });
+    expect(r[0]?.status).toBe("unresolved");
+    expect(r[0]?.reason).toBe("no_match");
+  });
+
+  it("registry=null behaves identically to C5 (fallback safe)", () => {
+    const r = resolveAttendees({
+      original_text: "邀请 Peter",
+      provided: [],
+      map: parseAttendeeMap("Peter=ou_peter_env"),
+      registry: null,
+    });
+    expect(r[0]?.source).toBe("env_map");
+    expect(r[0]?.open_id).toBe("ou_peter_env");
+  });
+});
+
+// ── contact-registry helpers (C6) ─────────────────────────────────────────────
+
+describe("contact-registry helpers (C6)", () => {
+  it("isRegistryStale: fresh registry is not stale", async () => {
+    const { isRegistryStale } = await import("./contact-registry.js");
+    expect(isRegistryStale({ synced_at: new Date().toISOString(), users: [] }, 7)).toBe(false);
+  });
+
+  it("isRegistryStale: 10-day-old registry is stale under 7-day TTL", async () => {
+    const { isRegistryStale } = await import("./contact-registry.js");
+    const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000).toISOString();
+    expect(isRegistryStale({ synced_at: tenDaysAgo, users: [] }, 7)).toBe(true);
+  });
+
+  it("registryAgeDays: invalid timestamp → Infinity (treated as stale)", async () => {
+    const { registryAgeDays, isRegistryStale } = await import("./contact-registry.js");
+    const reg = { synced_at: "not-a-date", users: [] };
+    expect(registryAgeDays(reg)).toBe(Infinity);
+    expect(isRegistryStale(reg, 7)).toBe(true);
+  });
+
+  it("resolveContact: unique name match returns matched_by='name'", async () => {
+    const { resolveContact } = await import("./contact-registry.js");
+    const r = resolveContact(
+      {
+        synced_at: new Date().toISOString(),
+        users: [
+          { name: "Peter", open_id: "ou_p", status: "active" },
+          { name: "Lisa", open_id: "ou_l", status: "active" },
+        ],
+      },
+      "Peter",
+    );
+    expect(r.kind).toBe("unique");
+    if (r.kind === "unique") {
+      expect(r.matched_by).toBe("name");
+      expect(r.user.open_id).toBe("ou_p");
+    }
+  });
+
+  it("resolveContact: email match (case-insensitive)", async () => {
+    const { resolveContact } = await import("./contact-registry.js");
+    const r = resolveContact(
+      {
+        synced_at: new Date().toISOString(),
+        users: [{ name: "Peter", email: "Peter@Ainetrix.ai", open_id: "ou_p", status: "active" }],
+      },
+      "peter@ainetrix.ai",
+    );
+    expect(r.kind).toBe("unique");
+    if (r.kind === "unique") expect(r.matched_by).toBe("email");
+  });
+
+  it("resolveContact: empty query → none", async () => {
+    const { resolveContact } = await import("./contact-registry.js");
+    const r = resolveContact({ synced_at: new Date().toISOString(), users: [] }, "");
+    expect(r.kind).toBe("none");
+  });
+
+  it("loadRegistry: missing file → null", async () => {
+    const { loadRegistry } = await import("./contact-registry.js");
+    const r = await loadRegistry("/nonexistent/path/contacts.json");
+    expect(r).toBeNull();
+  });
+
+  it("saveRegistry → loadRegistry round-trip", async () => {
+    const { saveRegistry, loadRegistry } = await import("./contact-registry.js");
+    const path = await import("node:path");
+    const os = await import("node:os");
+    const fs = await import("node:fs/promises");
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "contact-reg-test-"));
+    const tmp = path.join(tmpDir, "reg.json");
+    try {
+      await saveRegistry(
+        {
+          synced_at: "2026-05-14T00:00:00.000Z",
+          users: [{ name: "Peter", open_id: "ou_p", status: "active" }],
+        },
+        tmp,
+      );
+      const loaded = await loadRegistry(tmp);
+      expect(loaded?.users).toHaveLength(1);
+      expect(loaded?.users[0]?.name).toBe("Peter");
+      expect(loaded?.synced_at).toBe("2026-05-14T00:00:00.000Z");
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+});
+
+// ── syncContactsFromFeishu (C6) ───────────────────────────────────────────────
+
+describe("syncContactsFromFeishu (C6)", () => {
+  it("returns error when Contact API is unavailable on the client", async () => {
+    const { syncContactsFromFeishu } = await import("./contact-registry.js");
+    const r = await syncContactsFromFeishu({} as never);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("contact:contact:readonly");
+  });
+
+  it("pages through scope.list and saves users via user.batch", async () => {
+    const { syncContactsFromFeishu, loadRegistry } = await import("./contact-registry.js");
+    const path = await import("node:path");
+    const os = await import("node:os");
+    const fs = await import("node:fs/promises");
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "contact-sync-test-"));
+    const tmp = path.join(tmpDir, "reg.json");
+
+    const scopeList = vi
+      .fn()
+      // First page
+      .mockResolvedValueOnce({
+        code: 0,
+        data: { user_ids: ["ou_a", "ou_b"], has_more: true, page_token: "tok2" },
+      })
+      // Second page
+      .mockResolvedValueOnce({
+        code: 0,
+        data: { user_ids: ["ou_c"], has_more: false },
+      });
+
+    const userBatch = vi.fn().mockResolvedValue({
+      code: 0,
+      data: {
+        items: [
+          { name: "Peter", en_name: "Peter Zhang", email: "p@a.ai", open_id: "ou_a", status: {} },
+          { name: "Lisa", email: "l@a.ai", open_id: "ou_b", status: { is_resigned: true } },
+          { name: "Bob", open_id: "ou_c", status: { is_frozen: true } },
+        ],
+      },
+    });
+
+    const client = {
+      contact: { scope: { list: scopeList }, user: { batch: userBatch } },
+    };
+
+    try {
+      const r = await syncContactsFromFeishu(client as never, { filePath: tmp });
+      expect(r.ok).toBe(true);
+      expect(r.synced_users).toBe(3);
+      // scope.list was paged twice
+      expect(scopeList).toHaveBeenCalledTimes(2);
+      // user.batch was called with the right open_ids
+      const batchCall = userBatch.mock.calls[0][0];
+      expect(batchCall.params.user_ids).toEqual(["ou_a", "ou_b", "ou_c"]);
+      expect(batchCall.params.user_id_type).toBe("open_id");
+
+      const loaded = await loadRegistry(tmp);
+      expect(loaded?.users.map((u) => u.status)).toEqual(["active", "resigned", "frozen"]);
+      // display_name only present when en_name differs from name
+      expect(loaded?.users[0]?.display_name).toBe("Peter Zhang");
+      expect(loaded?.users[1]?.display_name).toBeUndefined();
+    } finally {
+      await fs.rm(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces scope.list permission errors clearly", async () => {
+    const { syncContactsFromFeishu } = await import("./contact-registry.js");
+    const client = {
+      contact: {
+        scope: { list: vi.fn().mockResolvedValue({ code: 99991663, msg: "permission denied" }) },
+        user: { batch: vi.fn() },
+      },
+    };
+    const r = await syncContactsFromFeishu(client as never);
+    expect(r.ok).toBe(false);
+    expect(r.error).toContain("99991663");
+    expect(r.error).toContain("contact:contact:readonly");
+  });
 });
 
 // ── buildEventDraft — attendees (C5) ──────────────────────────────────────────
@@ -2049,7 +2360,7 @@ describe("attendee invitation via registerFeishuCalendarTools (C5)", () => {
     expect(calendarEventAttendeeCreateMock).not.toHaveBeenCalled();
     expect(parsed.invited_attendees).toEqual([]);
     expect(parsed.not_invited_attendees).toEqual([
-      { name: "Stranger", reason: expect.stringContaining("Unresolved name") },
+      { name: "Stranger", reason: expect.stringContaining("not found") },
     ]);
   });
 
@@ -2192,6 +2503,236 @@ describe("attendee invitation via registerFeishuCalendarTools (C5)", () => {
     const callArg = calendarEventAttendeeCreateMock.mock.calls[0][0];
     expect(callArg.data.attendees).toEqual([
       { type: "user", user_id: "ou_bob_explicit", is_optional: false },
+    ]);
+  });
+});
+
+// ── sync_contacts / search_contacts via tool (C6) ────────────────────────────
+
+describe("sync_contacts / search_contacts via registerFeishuCalendarTools (C6)", () => {
+  let tmpDir = "";
+  let tmpPath = "";
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    draftStore.clear();
+    const path = await import("node:path");
+    const os = await import("node:os");
+    const fs = await import("node:fs/promises");
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "c6-tool-test-"));
+    tmpPath = path.join(tmpDir, "contacts.json");
+    vi.stubEnv("AINETRIX_CONTACT_REGISTRY_PATH", tmpPath);
+  });
+
+  afterEach(async () => {
+    vi.unstubAllEnvs();
+    draftStore.clear();
+    const fs = await import("node:fs/promises");
+    if (tmpDir) await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function buildTool(
+    opts: {
+      requesterSenderId?: string;
+      allowedUsers?: string;
+      clientOverride?: Record<string, unknown>;
+    } = {},
+  ) {
+    vi.stubEnv("AINETRIX_FEISHU_DEFAULT_CALENDAR_ID", "cal_default");
+    vi.stubEnv("AINETRIX_CALENDAR_ALLOWED_USERS", opts.allowedUsers ?? "feishu:ou_abc");
+    const scopeList = vi.fn().mockResolvedValue({
+      code: 0,
+      data: { user_ids: ["ou_peter_long_id_1", "ou_lisa_long_id_2"], has_more: false },
+    });
+    const userBatch = vi.fn().mockResolvedValue({
+      code: 0,
+      data: {
+        items: [
+          { name: "Peter", email: "peter@ainetrix.ai", open_id: "ou_peter_long_id_1", status: {} },
+          { name: "Lisa", email: "lisa@ainetrix.ai", open_id: "ou_lisa_long_id_2", status: {} },
+        ],
+      },
+    });
+    createFeishuClientMock.mockReturnValue(
+      opts.clientOverride ?? {
+        contact: { scope: { list: scopeList }, user: { batch: userBatch } },
+      },
+    );
+
+    const toolFactories: Array<(ctx: unknown) => { name: string; execute: Function }> = [];
+    const mockApi = {
+      config: {
+        channels: {
+          feishu: {
+            enabled: true,
+            accounts: { default: { enabled: true, appId: "x", appSecret: "y" } },
+          },
+        },
+      },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      registerTool: (factory: (ctx: unknown) => unknown) => {
+        toolFactories.push(factory as (ctx: unknown) => { name: string; execute: Function });
+      },
+    };
+    const { registerFeishuCalendarTools } = await import("./calendar.js");
+    registerFeishuCalendarTools(mockApi as never);
+    const tool = toolFactories[0]!({
+      agentAccountId: undefined,
+      requesterSenderId: opts.requesterSenderId ?? "ou_abc",
+      messageChannel: "feishu",
+    });
+    return { tool, scopeList, userBatch };
+  }
+
+  it("sync_contacts populates the registry file and returns synced_users count", async () => {
+    const { tool } = await buildTool();
+    const r = await tool.execute("sync-1", { action: "sync_contacts" });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+    expect(parsed.ok).toBe(true);
+    expect(parsed.synced_users).toBe(2);
+    // sync_contacts response should not leak any open_id
+    expect(JSON.stringify(parsed)).not.toContain("ou_peter_long_id_1");
+
+    const fs = await import("node:fs/promises");
+    const onDisk = JSON.parse(await fs.readFile(tmpPath, "utf8")) as {
+      users: Array<{ name: string; open_id: string }>;
+    };
+    expect(onDisk.users.map((u) => u.name).sort()).toEqual(["Lisa", "Peter"]);
+  });
+
+  it("sync_contacts is rejected for users NOT in AINETRIX_CALENDAR_ALLOWED_USERS", async () => {
+    const { tool } = await buildTool({ requesterSenderId: "ou_random_user" });
+    const r = await tool.execute("sync-deny", { action: "sync_contacts" });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+    expect(parsed.error).toBeDefined();
+    expect(String(parsed.error)).toContain("Not authorized");
+  });
+
+  it("sync_contacts returns clear permission error when Contact API surface is missing", async () => {
+    // SDK without contact namespace (permissions not granted on the app)
+    const { tool } = await buildTool({ clientOverride: {} });
+    const r = await tool.execute("sync-noperm", { action: "sync_contacts" });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+    expect(parsed.ok).toBe(false);
+    expect(String(parsed.error)).toContain("contact:contact:readonly");
+  });
+
+  it("search_contacts returns no_match when registry is empty", async () => {
+    const { tool } = await buildTool();
+    const r = await tool.execute("search-empty", {
+      action: "search_contacts",
+      query: "Peter",
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+    expect(parsed.found).toBe(false);
+    expect(String(parsed.error)).toContain("sync_contacts");
+  });
+
+  it("sync_contacts then search_contacts finds Peter (masked open_id only)", async () => {
+    const { tool } = await buildTool();
+    await tool.execute("sync-a", { action: "sync_contacts" });
+    const r = await tool.execute("search-a", {
+      action: "search_contacts",
+      query: "Peter",
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+    expect(parsed.found).toBe(true);
+    const match = parsed.match as Record<string, unknown>;
+    expect(match.name).toBe("Peter");
+    expect(match.email).toBe("peter@ainetrix.ai");
+    // Response must NOT include the full open_id
+    expect(JSON.stringify(parsed)).not.toContain("ou_peter_long_id_1");
+    expect(String(match.open_id_masked)).toMatch(/^ou_p…id_1$/);
+  });
+
+  it("create_event_draft uses the registry after sync_contacts (C6 end-to-end)", async () => {
+    // Setup: sync via Contact API, then use Calendar API for the draft+event
+    const calendarEventCreateMock = vi.fn().mockResolvedValue({
+      code: 0,
+      data: {
+        event: {
+          event_id: "evt_c6",
+          summary: "产品讨论",
+          start_time: { timezone: "Asia/Shanghai" },
+          vchat: { vc_type: "vc" },
+        },
+      },
+    });
+    const calendarEventAttendeeCreateMock = vi.fn().mockResolvedValue({ code: 0, data: {} });
+    const scopeList = vi
+      .fn()
+      .mockResolvedValue({ code: 0, data: { user_ids: ["ou_peter"], has_more: false } });
+    const userBatch = vi.fn().mockResolvedValue({
+      code: 0,
+      data: {
+        items: [{ name: "Peter", email: "peter@ainetrix.ai", open_id: "ou_peter", status: {} }],
+      },
+    });
+    createFeishuClientMock.mockReturnValue({
+      contact: { scope: { list: scopeList }, user: { batch: userBatch } },
+      calendar: {
+        calendarEvent: { create: calendarEventCreateMock },
+        calendarEventAttendee: { create: calendarEventAttendeeCreateMock },
+      },
+    });
+    vi.stubEnv("AINETRIX_FEISHU_DEFAULT_CALENDAR_ID", "cal_default");
+    vi.stubEnv("AINETRIX_CALENDAR_ALLOWED_USERS", "feishu:ou_abc");
+    // No env map at all — Peter must come from registry
+    vi.stubEnv("AINETRIX_CALENDAR_ATTENDEE_MAP", "");
+
+    const toolFactories: Array<(ctx: unknown) => { name: string; execute: Function }> = [];
+    const mockApi = {
+      config: {
+        channels: {
+          feishu: {
+            enabled: true,
+            accounts: { default: { enabled: true, appId: "x", appSecret: "y" } },
+          },
+        },
+      },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      registerTool: (f: (ctx: unknown) => unknown) => {
+        toolFactories.push(f as (ctx: unknown) => { name: string; execute: Function });
+      },
+    };
+    const { registerFeishuCalendarTools } = await import("./calendar.js");
+    registerFeishuCalendarTools(mockApi as never);
+    const tool = toolFactories[0]!({
+      agentAccountId: undefined,
+      requesterSenderId: "ou_abc",
+      messageChannel: "feishu",
+    });
+
+    await tool.execute("c6-sync", { action: "sync_contacts" });
+
+    const draftR = await tool.execute("c6-draft", {
+      action: "create_event_draft",
+      title: "产品讨论",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "帮我创建一个会议，明天下午3点，产品讨论，1小时，邀请 Peter",
+    });
+    const draftParsed = JSON.parse(draftR.content[0].text) as {
+      draft: { draft_id: string; attendees: AttendeeEntry[] };
+      preview: string;
+    };
+    expect(draftParsed.draft.attendees).toHaveLength(1);
+    expect(draftParsed.draft.attendees[0]?.source).toBe("contact_registry");
+    expect(draftParsed.preview).toContain("contact_registry");
+
+    const createR = await tool.execute("c6-create", {
+      action: "create_event",
+      draft_id: draftParsed.draft.draft_id,
+    });
+    const createParsed = JSON.parse(createR.content[0].text) as Record<string, unknown>;
+    expect(createParsed.success).toBe(true);
+    expect((createParsed.invited_attendees as Array<{ name: string }>).map((a) => a.name)).toEqual([
+      "Peter",
+    ]);
+    // Attendee API called with Peter's open_id from registry
+    const callArg = calendarEventAttendeeCreateMock.mock.calls[0][0];
+    expect(callArg.data.attendees).toEqual([
+      { type: "user", user_id: "ou_peter", is_optional: false },
     ]);
   });
 });

@@ -1,16 +1,32 @@
 import { Type, type Static } from "@sinclair/typebox";
 
-const CALENDAR_ACTION_VALUES = ["list_calendars", "create_event_draft", "create_event"] as const;
+const CALENDAR_ACTION_VALUES = [
+  "list_calendars",
+  "create_event_draft",
+  "create_event",
+  "sync_contacts",
+  "search_contacts",
+] as const;
 
 export const FeishuCalendarSchema = Type.Object({
   action: Type.Unsafe<(typeof CALENDAR_ACTION_VALUES)[number]>({
     type: "string",
     enum: [...CALENDAR_ACTION_VALUES],
     description:
-      "Action: list_calendars | create_event_draft | create_event. " +
-      "Always call create_event_draft first, show the draft to the user, " +
-      "and only call create_event after explicit user confirmation.",
+      "Action: list_calendars | create_event_draft | create_event | sync_contacts | search_contacts. " +
+      "create_event_draft → show preview → wait for user confirmation → create_event. " +
+      "sync_contacts populates the local Ainetrix contact registry from Feishu " +
+      "(used as secondary attendee lookup after AINETRIX_CALENDAR_ATTENDEE_MAP). " +
+      "search_contacts looks up a single name/email in the registry.",
   }),
+  query: Type.Optional(
+    Type.String({
+      description:
+        "Single name or email to look up. Required for `search_contacts`. " +
+        "Matches are case-insensitive on `name`, `display_name`, or `email` " +
+        "(no substring/prefix — exact only).",
+    }),
+  ),
   title: Type.Optional(
     Type.String({ description: "Event title (required for create_event_draft / create_event)" }),
   ),

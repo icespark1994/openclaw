@@ -196,19 +196,20 @@ If the user says "线下会议", "不要视频会议", "no video conference", or
 
 The preview will show `📹 视频会议：无`.
 
-## Attendees (C5 — explicit user invites only)
+## Attendees (C5 / C6 — explicit user invites)
 
 The tool supports inviting **explicitly-named user attendees** via the
-`attendees` parameter on `create_event_draft`. The tool resolves names through
-the operator-controlled env map `AINETRIX_CALENDAR_ATTENDEE_MAP`.
+`attendees` parameter on `create_event_draft`. Names are resolved through
+two sources, in priority order, with `explicit_open_id` always winning:
+
+1. **`explicit_open_id`** — the LLM passes `attendees: [{name, open_id: "ou_…"}]`.
+2. **`env_map`** — `AINETRIX_CALENDAR_ATTENDEE_MAP` (operator-controlled).
+3. **`contact_registry`** — local cache populated from the Feishu Contact API
+   via `sync_contacts` (C6).
+4. Otherwise → `unresolved` (`no_match` or `multiple_candidates`) and **never invited**.
 
 **Phase 1 supports only user-type attendees (Feishu open_id).** It does NOT
-support:
-
-- Meeting rooms
-- Chats / groups
-- Departments
-- External email addresses
+support meeting rooms, chats/groups, departments, or external emails.
 
 ### Rules
 
@@ -216,24 +217,53 @@ support:
    "invite Alan and Peter"), you may pass them as `attendees: [{name: "Alan"}, ...]`.
    The tool **also auto-extracts** names from `original_text`, so even if you forget,
    the tool will try to resolve from the user's verbatim text.
-2. Each attendee is resolved against `AINETRIX_CALENDAR_ATTENDEE_MAP`. Resolved
-   names get an `open_id`; unmatched names are kept on the draft as `unresolved`.
+2. Each attendee is resolved through env_map → contact_registry. The draft
+   preview shows the source next to each resolved name (e.g.
+   `Alan（env_map）`, `Peter（contact_registry）`).
 3. The draft preview shows:
-   - `👥 已解析参会人（确认后将邀请）：…`
-   - `⚠️ 未解析参会人：…`（如有）
+   - `👥 已解析参会人（确认后将邀请）：…（来源）`
+   - `⚠️ 未解析参会人（确认后将 *不会* 被邀请）：…`（如有），其中候选多人时会列出候选清单
+   - `ℹ️ Ainetrix 通讯录缓存已 N 天未更新…`（registry 过期时）
 4. After confirmation, `create_event` first creates the event, then calls the
    Feishu attendee API to invite **only the resolved attendees**. Unresolved
-   names are NEVER invited.
+   names — including names with multiple registry candidates — are NEVER invited.
 5. The success response includes:
    - `invited_attendees`: who was actually invited
-   - `not_invited_attendees`: name + reason (unresolved, or API failure)
+   - `not_invited_attendees`: name + reason (unresolved no_match, multiple
+     candidates, or API failure)
    - `attendee_partial_failure: true` (only if the attendee API failed; the
      event itself is still created)
 6. **Do NOT claim someone was invited** unless they appear in `invited_attendees`.
    If a name is in `not_invited_attendees`, tell the user explicitly that this
    person was not invited and why.
 7. Direct `open_id` passthrough is allowed in the `attendees` array if you
-   already have a trusted `ou_…` id. The tool will skip the env-map lookup.
+   already have a trusted `ou_…` id; the tool skips lookups in that case.
+
+### Contact registry maintenance (C6)
+
+The contact registry is a local JSON file (`/home/node/.openclaw/data/ainetrix_contacts.json`
+by default; override with `AINETRIX_CONTACT_REGISTRY_PATH`). It is populated by
+calling the Feishu Contact API.
+
+- An admin can sync it on demand: call `action: "sync_contacts"`. Only callers
+  in `AINETRIX_CALENDAR_ALLOWED_USERS` may do this.
+- The registry is considered stale after `AINETRIX_CONTACT_REGISTRY_TTL_DAYS`
+  (default 7 days). The draft preview surfaces a soft warning when stale, but
+  resolution still uses the cached data.
+- To look up a single person without creating an event, call
+  `action: "search_contacts", query: "Peter"` (or `"peter@ainetrix.ai"`).
+
+### Example: sync + resolve
+
+> User: 同步 Ainetrix 通讯录
+
+Bot calls `feishu_calendar` with `{ "action": "sync_contacts" }` and reports the
+returned `synced_users` count to the user.
+
+> User: 帮我创建一个会议，明天下午3点，产品讨论，1小时，邀请 Peter
+
+Bot calls `create_event_draft` with the user's verbatim text in `original_text`.
+The preview shows `👥 已解析参会人（确认后将邀请）：Peter（contact_registry）`.
 
 ## Configuration
 
@@ -241,12 +271,16 @@ The default calendar is set via `AINETRIX_FEISHU_DEFAULT_CALENDAR_ID`. If this v
 
 Write access is restricted by `AINETRIX_CALENDAR_ALLOWED_USERS`. If not configured, `create_event` will be rejected.
 
-Attendee resolution uses `AINETRIX_CALENDAR_ATTENDEE_MAP`, either:
+Attendee resolution uses (in priority order):
 
-- Semicolon-delimited: `Alan=ou_xxx;Peter=ou_yyy;张三=ou_zzz`
-- JSON: `{"Alan":"ou_xxx","Peter":"ou_yyy"}`
+1. `AINETRIX_CALENDAR_ATTENDEE_MAP` (env). Two formats:
+   - Semicolon: `Alan=ou_xxx;Peter=ou_yyy;张三=ou_zzz`
+   - JSON: `{"Alan":"ou_xxx","Peter":"ou_yyy"}`
+2. Contact registry (C6) populated by `sync_contacts`. Configurable:
+   - `AINETRIX_CONTACT_REGISTRY_PATH` (default `/home/node/.openclaw/data/ainetrix_contacts.json`)
+   - `AINETRIX_CONTACT_REGISTRY_TTL_DAYS` (default `7`)
 
-If unset, all attendees fall through as `unresolved` and nobody gets invited.
+If neither resolves a name, the attendee is `unresolved` and nobody by that name gets invited.
 
 ## Required Feishu App Permissions
 
@@ -255,3 +289,5 @@ If unset, all attendees fall through as `unresolved` and nobody gets invited.
 | `calendar:calendar:readonly`             | `list_calendars`                        |
 | `calendar:calendar.event:write`          | `create_event` (active since C4)        |
 | `calendar:calendar.event.attendee:write` | invite attendees in `create_event` (C5) |
+| `contact:contact:readonly`               | `sync_contacts` — list app-scope users  |
+| `contact:user.base:readonly`             | `sync_contacts` — read name/email       |
