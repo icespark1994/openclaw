@@ -180,6 +180,50 @@ export function applyRelativeDateCorrection(params: {
   };
 }
 
+// ── Offline meeting detection (C4.5) ──────────────────────────────────────────
+
+// Keywords that signal an in-person / no-video-needed meeting.
+// Ordered with longest/most-specific first so the matched_keyword is meaningful.
+const OFFLINE_KEYWORDS_CN = [
+  "线下会议",
+  "线下",
+  "面对面",
+  "当面",
+  "面谈",
+  "办公室",
+  "现场",
+] as const;
+
+// English keywords are matched case-insensitively as whole substrings.
+const OFFLINE_KEYWORDS_EN = [
+  "offline meeting",
+  "offline",
+  "in person",
+  "in-person",
+  "on site",
+  "on-site",
+  "onsite",
+  "face to face",
+  "face-to-face",
+] as const;
+
+export type OfflineIntent = { offline: true; matched_keyword: string } | { offline: false };
+
+export function detectOfflineMeetingIntent(originalText: string | undefined): OfflineIntent {
+  if (!originalText) return { offline: false };
+
+  for (const kw of OFFLINE_KEYWORDS_CN) {
+    if (originalText.includes(kw)) return { offline: true, matched_keyword: kw };
+  }
+
+  const lower = originalText.toLowerCase();
+  for (const kw of OFFLINE_KEYWORDS_EN) {
+    if (lower.includes(kw)) return { offline: true, matched_keyword: kw };
+  }
+
+  return { offline: false };
+}
+
 function json(data: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -231,6 +275,8 @@ export type DraftEntry = {
   source_channel: string | undefined;
   created_at: number;
   relative_date_correction?: DateCorrectionInfo;
+  /** Populated when the tool forced enable_vchat=false from an offline keyword. */
+  vchat_auto_disabled_reason?: string;
 };
 
 // In-memory draft store; resets on gateway restart (acceptable for Phase 1).
@@ -251,6 +297,8 @@ export type CalendarEventDraft = {
   current_date_in_timezone: string;
   /** Set when original_text was provided and a relative-date phrase was detected. */
   relative_date_correction?: DateCorrectionInfo;
+  /** Set when the tool forced enable_vchat=false based on offline keywords (C4.5). */
+  vchat_auto_disabled_reason?: string;
   preview: string;
 };
 
@@ -266,7 +314,7 @@ export function buildEventDraft(params: {
   original_text?: string;
 }): CalendarEventDraft {
   const tz = params.timezone?.trim() || DEFAULT_TIMEZONE;
-  const enableVchat = params.enable_vchat !== false; // default true
+  let enableVchat = params.enable_vchat !== false; // default true
   const currentDate = getCurrentDateInTimezone(tz);
   const hasOriginalText = Boolean(params.original_text?.trim());
 
@@ -286,6 +334,16 @@ export function buildEventDraft(params: {
     correction = result.correction ?? undefined;
   }
 
+  // C4.5: tool-layer offline-meeting override. Even if the LLM passed
+  // enable_vchat=true (or omitted it, defaulting to true), force false when the
+  // user's verbatim text contains a clear offline-meeting keyword.
+  let vchatAutoDisabledReason: string | undefined;
+  const offline = detectOfflineMeetingIntent(params.original_text);
+  if (offline.offline) {
+    enableVchat = false;
+    vchatAutoDisabledReason = `Detected offline meeting intent ("${offline.matched_keyword}") in original_text`;
+  }
+
   return {
     title: params.title,
     start_time: startTime,
@@ -297,6 +355,7 @@ export function buildEventDraft(params: {
     attendees: [],
     current_date_in_timezone: currentDate,
     ...(correction ? { relative_date_correction: correction } : {}),
+    ...(vchatAutoDisabledReason ? { vchat_auto_disabled_reason: vchatAutoDisabledReason } : {}),
     preview: formatDraftPreview({
       title: params.title,
       start_time: startTime,
@@ -307,6 +366,7 @@ export function buildEventDraft(params: {
       current_date: currentDate,
       correction,
       hasOriginalText,
+      vchat_auto_disabled_reason: vchatAutoDisabledReason,
     }),
   };
 }
@@ -321,8 +381,12 @@ function formatDraftPreview(params: {
   current_date: string;
   correction?: DateCorrectionInfo;
   hasOriginalText: boolean;
+  vchat_auto_disabled_reason?: string;
 }): string {
-  const vchatLine = params.enable_vchat ? "📹 视频会议：飞书会议\n" : "📹 视频会议：无\n";
+  let vchatLine = params.enable_vchat ? "📹 视频会议：飞书会议\n" : "📹 视频会议：无\n";
+  if (!params.enable_vchat && params.vchat_auto_disabled_reason) {
+    vchatLine += `   ↳ 已根据"线下/办公室/现场"等表达关闭视频会议\n`;
+  }
 
   let correctionLine = "";
   if (params.correction?.corrected) {
@@ -467,8 +531,12 @@ export async function createCalendarEvent(
     end_time: entry.end_time,
     timezone: event.start_time?.timezone ?? entry.timezone,
     vchat_enabled: entry.enable_vchat,
-    ...(meetingUrl ? { meeting_url: meetingUrl } : {}),
-    ...(vchat?.vc_info?.meeting_no ? { meeting_no: vchat.vc_info.meeting_no } : {}),
+    // C4.5: never expose meeting_url / meeting_no when vchat is disabled,
+    // even if the Feishu API echoes one back.
+    ...(entry.enable_vchat && meetingUrl ? { meeting_url: meetingUrl } : {}),
+    ...(entry.enable_vchat && vchat?.vc_info?.meeting_no
+      ? { meeting_no: vchat.vc_info.meeting_no }
+      : {}),
     ...(event.app_link ? { app_link: event.app_link } : {}),
   };
 }
@@ -589,6 +657,12 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                   source_user: requesterSenderId ?? undefined,
                   source_channel: messageChannel ?? undefined,
                   created_at: Date.now(),
+                  ...(baseDraft.relative_date_correction
+                    ? { relative_date_correction: baseDraft.relative_date_correction }
+                    : {}),
+                  ...(baseDraft.vchat_auto_disabled_reason
+                    ? { vchat_auto_disabled_reason: baseDraft.vchat_auto_disabled_reason }
+                    : {}),
                 };
                 draftStore.set(draftId, entry);
 
@@ -686,6 +760,6 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
   );
 
   api.logger.info?.(
-    "feishu_calendar: Registered feishu_calendar (Stage C4.4 — original_text required + tool-layer relative-date correction)",
+    "feishu_calendar: Registered feishu_calendar (Stage C4.5 — original_text required + relative-date correction + offline-meeting auto-disable vchat)",
   );
 }

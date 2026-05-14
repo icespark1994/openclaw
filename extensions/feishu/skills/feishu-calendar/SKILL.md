@@ -46,6 +46,20 @@ If the user does not confirm, do not create. If the user edits the details, call
 - After a successful `create_event`, report `meeting_url` (if returned) so the user can join directly.
 - **NEVER claim** a meeting link was created unless `create_event` returns `success: true`.
 
+### Tool-layer offline-meeting auto-disable (C4.5)
+
+The tool scans `original_text` for offline-meeting keywords and **forces `enable_vchat=false`** when any of these appear, even if you passed `enable_vchat: true` or omitted it:
+
+- Chinese: `线下会议`, `线下`, `办公室`, `现场`, `当面`, `面谈`, `面对面`
+- English: `offline`, `offline meeting`, `in person`, `in-person`, `onsite`, `on-site`, `on site`, `face to face`, `face-to-face`
+
+When this happens:
+
+- The draft preview shows `📹 视频会议：无` and a sub-line `↳ 已根据"线下/办公室/现场"等表达关闭视频会议`.
+- The successful `create_event` response will NOT include `meeting_url` or `meeting_no`.
+- **Do NOT claim a meeting link exists** for these events, and do NOT tell the user to "点击加入会议" — there is no video conference.
+- Pass `original_text` verbatim; the tool decides. Do not "auto-fix" by passing `enable_vchat: true` to override the user's intent.
+
 ## Date and Time Handling (C4.3 / C4.4 — Tool-Layer Correction + Enforced original_text)
 
 The tool now performs **code-level relative-date correction** — you do not need to perfectly resolve Chinese relative dates yourself.
@@ -158,9 +172,11 @@ If the tool returns an error mentioning "not authorized" or "AINETRIX_CALENDAR_A
 
 - 创建成功 ✅
 - event_id（可用于追踪）
-- **meeting_url**（如有）作为视频会议链接，供用户直接加入
+- **meeting_url**（仅当响应里有此字段时）作为视频会议链接，供用户直接加入。线下会议响应中**不会**包含 `meeting_url`，此时**不要**编造或提及任何视频会议链接。
 - **app_link**（如有）作为飞书日历深链，供用户在客户端查看日程
 - 提示：日程已创建在 **Ainetrix Team Calendar**，团队成员可见。
+
+If the response has `vchat_enabled: false` (or no `meeting_url`), do not say anything like "点击加入会议" or "视频会议链接" — there is no video conference for this event.
 
 If the tool returns an error, report the error message to the user.
 

@@ -12,6 +12,7 @@ import {
   applyRelativeDateCorrection,
   buildEventDraft,
   createCalendarEvent,
+  detectOfflineMeetingIntent,
   detectRelativeDate,
   draftStore,
   getCurrentDateInTimezone,
@@ -476,6 +477,170 @@ describe("applyRelativeDateCorrection", () => {
     });
     expect(result.correction).toBeNull();
     expect(result.start_time).toBe("2026-05-16T10:00:00+08:00");
+  });
+});
+
+// ── detectOfflineMeetingIntent (C4.5) ─────────────────────────────────────────
+
+describe("detectOfflineMeetingIntent", () => {
+  it("returns false for undefined input", () => {
+    expect(detectOfflineMeetingIntent(undefined).offline).toBe(false);
+  });
+
+  it("returns false for empty string", () => {
+    expect(detectOfflineMeetingIntent("").offline).toBe(false);
+  });
+
+  it("detects 线下会议 (most specific Chinese keyword)", () => {
+    const r = detectOfflineMeetingIntent("帮我创建一个线下会议，明天下午4点");
+    expect(r.offline).toBe(true);
+    if (r.offline) expect(r.matched_keyword).toBe("线下会议");
+  });
+
+  it("detects 办公室 in '办公室讨论'", () => {
+    const r = detectOfflineMeetingIntent("明天下午4点办公室讨论");
+    expect(r.offline).toBe(true);
+    if (r.offline) expect(r.matched_keyword).toBe("办公室");
+  });
+
+  it("detects 现场", () => {
+    expect(detectOfflineMeetingIntent("现场会议下午3点").offline).toBe(true);
+  });
+
+  it("detects 当面", () => {
+    expect(detectOfflineMeetingIntent("我们当面聊一下").offline).toBe(true);
+  });
+
+  it("detects 面谈", () => {
+    expect(detectOfflineMeetingIntent("约一个面谈").offline).toBe(true);
+  });
+
+  it("detects 面对面", () => {
+    expect(detectOfflineMeetingIntent("我想约一个面对面的会议").offline).toBe(true);
+  });
+
+  it("detects 线下 alone", () => {
+    expect(detectOfflineMeetingIntent("我们线下讨论一下").offline).toBe(true);
+  });
+
+  it("detects English 'offline meeting' (case-insensitive)", () => {
+    const r = detectOfflineMeetingIntent("schedule an OFFLINE meeting tomorrow");
+    expect(r.offline).toBe(true);
+  });
+
+  it("detects English 'in person'", () => {
+    expect(detectOfflineMeetingIntent("Let's meet in person at 4pm").offline).toBe(true);
+  });
+
+  it("detects English 'in-person'", () => {
+    expect(detectOfflineMeetingIntent("In-person meeting Friday").offline).toBe(true);
+  });
+
+  it("detects English 'onsite'", () => {
+    expect(detectOfflineMeetingIntent("onsite review at HQ").offline).toBe(true);
+  });
+
+  it("detects English 'on-site'", () => {
+    expect(detectOfflineMeetingIntent("on-site visit Tuesday").offline).toBe(true);
+  });
+
+  it("detects English 'face to face'", () => {
+    expect(detectOfflineMeetingIntent("face to face chat").offline).toBe(true);
+  });
+
+  it("does NOT trigger on plain 视频会议", () => {
+    expect(detectOfflineMeetingIntent("视频会议明天下午3点").offline).toBe(false);
+  });
+
+  it("does NOT trigger on 飞书会议", () => {
+    expect(detectOfflineMeetingIntent("飞书会议明天下午3点").offline).toBe(false);
+  });
+
+  it("does NOT trigger on plain 产品讨论 without offline keywords", () => {
+    expect(
+      detectOfflineMeetingIntent("帮我创建一个会议，明天下午3点，产品讨论，1小时").offline,
+    ).toBe(false);
+  });
+});
+
+// ── buildEventDraft — offline-meeting auto-disable (C4.5) ─────────────────────
+
+describe("buildEventDraft — offline auto-disable vchat (C4.5)", () => {
+  it("forces enable_vchat=false when original_text contains 线下会议", () => {
+    const d = buildEventDraft({
+      title: "办公室讨论",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      calendar_id: "cal_x",
+      // LLM omitted enable_vchat → default true. Tool must still force false.
+      original_text: "帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟",
+    });
+    expect(d.enable_vchat).toBe(false);
+    expect(d.vchat_auto_disabled_reason).toContain("线下会议");
+  });
+
+  it("overrides explicit enable_vchat=true when offline keyword present", () => {
+    const d = buildEventDraft({
+      title: "办公室讨论",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      calendar_id: "cal_x",
+      enable_vchat: true, // LLM tried to enable vchat
+      original_text: "在办公室面对面讨论",
+    });
+    expect(d.enable_vchat).toBe(false);
+    expect(d.vchat_auto_disabled_reason).toBeDefined();
+  });
+
+  it("preview shows 视频会议：无 and auto-disable sub-line", () => {
+    const d = buildEventDraft({
+      title: "现场会议",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T17:00:00+08:00",
+      calendar_id: "cal_x",
+      original_text: "现场会议下午4点",
+    });
+    expect(d.preview).toContain("视频会议：无");
+    expect(d.preview).toContain("已根据");
+    expect(d.preview).toContain("关闭视频会议");
+  });
+
+  it("English 'in person meeting' also disables vchat", () => {
+    const d = buildEventDraft({
+      title: "Sync",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T17:00:00+08:00",
+      calendar_id: "cal_x",
+      original_text: "Let's have an in person meeting tomorrow",
+    });
+    expect(d.enable_vchat).toBe(false);
+  });
+
+  it("normal meeting (no offline keyword) keeps enable_vchat=true by default", () => {
+    const d = buildEventDraft({
+      title: "产品讨论",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      calendar_id: "cal_x",
+      original_text: "帮我创建一个会议，明天下午3点，产品讨论，1小时",
+    });
+    expect(d.enable_vchat).toBe(true);
+    expect(d.vchat_auto_disabled_reason).toBeUndefined();
+    expect(d.preview).toContain("视频会议：飞书会议");
+  });
+
+  it("explicit enable_vchat=false stays false even without offline keyword", () => {
+    const d = buildEventDraft({
+      title: "Just no vchat",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      calendar_id: "cal_x",
+      enable_vchat: false,
+      original_text: "不要视频会议",
+    });
+    expect(d.enable_vchat).toBe(false);
+    // No auto-disable reason because user explicitly set it (no offline keyword matched).
+    expect(d.vchat_auto_disabled_reason).toBeUndefined();
   });
 });
 
@@ -1340,5 +1505,107 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
     // SDK was called with vchat.vc_type="vc"
     const callArg = calendarEventCreateMock.mock.calls[0][0];
     expect(callArg.data.vchat).toEqual({ vc_type: "vc" });
+  });
+
+  // ── C4.5: offline-meeting tool-layer integration ────────────────────────────
+
+  it("create_event_draft auto-disables vchat for '线下会议' even with enable_vchat=true", async () => {
+    const tool = await buildTool();
+    const result = await tool.execute("draft-offline", {
+      action: "create_event_draft",
+      title: "办公室讨论",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      enable_vchat: true, // LLM tried to enable it
+      original_text: "帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟",
+    });
+    const parsed = JSON.parse(result.content[0].text) as {
+      draft: Record<string, unknown>;
+      preview: string;
+    };
+    expect(parsed.draft.enable_vchat).toBe(false);
+    expect(parsed.draft.vchat_auto_disabled_reason).toBeDefined();
+    expect(parsed.preview).toContain("视频会议：无");
+    expect(parsed.preview).toContain("关闭视频会议");
+  });
+
+  it("create_event for offline draft sends vc_type=no_meeting and omits meeting_url", async () => {
+    // Feishu may echo a meeting_url even when we requested no_meeting; we must not surface it.
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: {
+        event: {
+          event_id: "evt_offline_1",
+          summary: "办公室讨论",
+          start_time: { timezone: "Asia/Shanghai" },
+          vchat: { vc_type: "no_meeting", meeting_url: "https://should-not-leak" },
+          app_link: "lark://calendar/...",
+        },
+      },
+    });
+    const tool = await buildTool();
+    const draftResult = await tool.execute("draft-offline-create", {
+      action: "create_event_draft",
+      title: "办公室讨论",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      original_text: "帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟",
+    });
+    const draftParsed = JSON.parse(draftResult.content[0].text) as { draft: { draft_id: string } };
+    const draftId = draftParsed.draft.draft_id;
+
+    const result = await tool.execute("create-offline", {
+      action: "create_event",
+      draft_id: draftId,
+    });
+    const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.vchat_enabled).toBe(false);
+    // C4.5: meeting_url must NOT be in the response even though Feishu echoed one.
+    expect(parsed.meeting_url).toBeUndefined();
+    expect(parsed.meeting_no).toBeUndefined();
+    expect(parsed.app_link).toBe("lark://calendar/...");
+
+    // SDK was called with vchat.vc_type="no_meeting"
+    const callArg = calendarEventCreateMock.mock.calls[0][0];
+    expect(callArg.data.vchat).toEqual({ vc_type: "no_meeting" });
+  });
+
+  it("normal meeting (no offline keyword) still defaults to vchat enabled", async () => {
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: {
+        event: {
+          event_id: "evt_normal",
+          summary: "产品讨论",
+          start_time: { timezone: "Asia/Shanghai" },
+          vchat: { vc_type: "vc", meeting_url: "https://vc.feishu.cn/j/123" },
+        },
+      },
+    });
+    const tool = await buildTool();
+    const draftResult = await tool.execute("draft-normal", {
+      action: "create_event_draft",
+      title: "产品讨论",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "帮我创建一个会议，明天下午3点，产品讨论，1小时",
+    });
+    const draftParsed = JSON.parse(draftResult.content[0].text) as {
+      draft: { draft_id: string; enable_vchat: boolean };
+      preview: string;
+    };
+    expect(draftParsed.draft.enable_vchat).toBe(true);
+    expect(draftParsed.preview).toContain("视频会议：飞书会议");
+
+    const result = await tool.execute("create-normal", {
+      action: "create_event",
+      draft_id: draftParsed.draft.draft_id,
+    });
+    const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(parsed.success).toBe(true);
+    expect(parsed.vchat_enabled).toBe(true);
+    expect(parsed.meeting_url).toBe("https://vc.feishu.cn/j/123");
   });
 });
