@@ -59,8 +59,10 @@ export const FeishuCalendarSchema = Type.Object({
     Type.String({
       description:
         "The user's verbatim request text. " +
-        "REQUIRED when the user uses relative date expressions such as '今天', '明天', '后天', '本周五', '下周一'. " +
-        "The tool parses this text to verify and auto-correct the date resolved in start_time. " +
+        "**REQUIRED for create_event_draft** — the tool will REJECT the draft if this is missing. " +
+        "Pass the user's original message exactly as received (Chinese or English) " +
+        "so the tool can verify and auto-correct relative date expressions " +
+        "such as '今天', '明天', '后天', '本周五', '下周一'. " +
         "Example: '帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟'.",
     }),
   ),

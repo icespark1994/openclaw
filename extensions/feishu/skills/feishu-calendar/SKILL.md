@@ -14,6 +14,14 @@ metadata:
 
 # Feishu Calendar Skill
 
+## `original_text` is REQUIRED (MANDATORY)
+
+**EVERY call to `create_event_draft` MUST include `original_text`** — the user's verbatim message, exactly as received. The tool will **REJECT** the draft and return an error if `original_text` is missing.
+
+- Always copy the user's full message (Chinese or English) into `original_text`.
+- This is required even when the message contains an absolute date — pass it anyway.
+- If the tool returns an error about missing `original_text`, retry once with the user's verbatim text. Do not fabricate text — use what the user actually wrote.
+
 ## Confirmation Requirement (MANDATORY)
 
 **NEVER call `create_event` without explicit user confirmation.**
@@ -38,13 +46,13 @@ If the user does not confirm, do not create. If the user edits the details, call
 - After a successful `create_event`, report `meeting_url` (if returned) so the user can join directly.
 - **NEVER claim** a meeting link was created unless `create_event` returns `success: true`.
 
-## Date and Time Handling (C4.3 — Tool-Layer Correction)
+## Date and Time Handling (C4.3 / C4.4 — Tool-Layer Correction + Enforced original_text)
 
 The tool now performs **code-level relative-date correction** — you do not need to perfectly resolve Chinese relative dates yourself.
 
-### REQUIRED: always pass `original_text`
+### REQUIRED: always pass `original_text` (enforced)
 
-Whenever the user's message contains a relative date expression ("今天", "明天", "后天", "本周五", "下周一", etc.), you **MUST** pass the user's verbatim message as `original_text` in `create_event_draft`.
+The tool **rejects** `create_event_draft` calls without `original_text`. Pass the user's verbatim message every time, regardless of whether the message contains a relative date.
 
 The tool will:
 

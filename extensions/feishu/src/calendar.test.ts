@@ -874,6 +874,7 @@ describe("create_event_draft via registerFeishuCalendarTools (C4)", () => {
       title: "Tax Review",
       start_time: "2026-05-16T13:00:00+08:00",
       end_time: "2026-05-16T14:00:00+08:00",
+      original_text: "Schedule Tax Review on 2026-05-16 at 1pm",
     });
     const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
     expect(parsed.draft).toBeDefined();
@@ -899,6 +900,7 @@ describe("create_event_draft via registerFeishuCalendarTools (C4)", () => {
       title: "Tax Review",
       start_time: "2026-05-16T13:00:00+08:00",
       end_time: "2026-05-16T14:00:00+08:00",
+      original_text: "Schedule Tax Review on 2026-05-16 at 1pm",
     });
     expect(draftStore.size).toBe(1);
   });
@@ -916,6 +918,7 @@ describe("create_event_draft via registerFeishuCalendarTools (C4)", () => {
       title: "Tax Review",
       start_time: "2026-05-16T13:00:00+08:00",
       end_time: "2026-05-16T14:00:00+08:00",
+      original_text: "Schedule Tax Review on 2026-05-16 at 1pm",
     });
     expect(createFeishuClientMock).not.toHaveBeenCalled();
   });
@@ -986,6 +989,7 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
       title: "Tax Review",
       start_time: "2026-05-16T13:00:00+08:00",
       end_time: "2026-05-16T14:00:00+08:00",
+      original_text: "Schedule tax review on 2026-05-16 at 1pm",
     });
     const parsed = JSON.parse(result.content[0].text) as { draft: { draft_id: string } };
     return parsed.draft.draft_id;
@@ -1115,6 +1119,7 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
       title: "No Attendees",
       start_time: "2026-05-16T13:00:00+08:00",
       end_time: "2026-05-16T14:00:00+08:00",
+      original_text: "Create No Attendees meeting on 2026-05-16",
     });
     const parsed = JSON.parse(result.content[0].text) as { draft: Record<string, unknown> };
     expect(parsed.draft.attendees).toEqual([]);
@@ -1200,7 +1205,7 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
     vi.useRealTimers();
   });
 
-  it("create_event_draft without original_text shows 未提供原始文本 in preview", async () => {
+  it("create_event_draft rejects when original_text is missing (C4.4)", async () => {
     const tool = await buildTool();
     const result = await tool.execute("draft-no-text", {
       action: "create_event_draft",
@@ -1208,8 +1213,50 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
       start_time: "2026-05-16T10:00:00+08:00",
       end_time: "2026-05-16T11:00:00+08:00",
     });
-    const parsed = JSON.parse(result.content[0].text) as { preview: string };
-    expect(parsed.preview).toContain("未提供原始文本");
+    const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    // Tool MUST reject — no draft, no preview, just an error.
+    expect(parsed.error).toBeDefined();
+    expect(String(parsed.error)).toContain("original_text");
+    expect(parsed.draft).toBeUndefined();
+    expect(parsed.preview).toBeUndefined();
+    // No draft stored in draftStore
+    expect(draftStore.size).toBe(0);
+  });
+
+  it("create_event_draft rejects when original_text is empty/whitespace (C4.4)", async () => {
+    const tool = await buildTool();
+    const result = await tool.execute("draft-blank", {
+      action: "create_event_draft",
+      title: "Meeting",
+      start_time: "2026-05-16T10:00:00+08:00",
+      end_time: "2026-05-16T11:00:00+08:00",
+      original_text: "   ",
+    });
+    const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    expect(parsed.error).toBeDefined();
+    expect(String(parsed.error)).toContain("original_text");
+    expect(draftStore.size).toBe(0);
+  });
+
+  it("create_event_draft rejects '明天' request without original_text (C4.4)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T01:00:00Z")); // Shanghai = 2026-05-14
+    const tool = await buildTool();
+    // Simulate the failing prod case: LLM passes wrong date for "明天" and forgets original_text.
+    const result = await tool.execute("draft-relative", {
+      action: "create_event_draft",
+      title: "办公室讨论",
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      enable_vchat: false,
+    });
+    const parsed = JSON.parse(result.content[0].text) as Record<string, unknown>;
+    // Must refuse — no silent draft creation with the wrong date.
+    expect(parsed.error).toBeDefined();
+    expect(String(parsed.error)).toContain("original_text");
+    expect(parsed.draft).toBeUndefined();
+    expect(draftStore.size).toBe(0);
+    vi.useRealTimers();
   });
 
   it("create_event_draft response includes current_date_in_timezone", async () => {
@@ -1221,6 +1268,7 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
       title: "日期基准测试",
       start_time: "2026-05-15T16:00:00+08:00",
       end_time: "2026-05-15T16:30:00+08:00",
+      original_text: "schedule on 2026-05-15",
     });
     const parsed = JSON.parse(result.content[0].text) as { draft: Record<string, unknown> };
     expect(parsed.draft.current_date_in_timezone).toBe("2026-05-14");
@@ -1236,6 +1284,7 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
       title: "Preview日期测试",
       start_time: "2026-05-15T16:00:00+08:00",
       end_time: "2026-05-15T16:30:00+08:00",
+      original_text: "preview on 2026-05-15",
     });
     const parsed = JSON.parse(result.content[0].text) as { preview: string };
     expect(parsed.preview).toContain("日期解析基准：Asia/Shanghai，今天是 2026-05-14");
@@ -1249,6 +1298,7 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
       title: "产品讨论",
       start_time: "2026-05-16T15:00:00+08:00",
       end_time: "2026-05-16T16:00:00+08:00",
+      original_text: "Schedule 产品讨论 on 2026-05-16 at 3pm",
     });
     const parsed = JSON.parse(result.content[0].text) as { preview: string };
     expect(parsed.preview).toContain("视频会议：飞书会议");
@@ -1262,6 +1312,7 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
       start_time: "2026-05-16T15:00:00+08:00",
       end_time: "2026-05-16T16:00:00+08:00",
       enable_vchat: false,
+      original_text: "Schedule 线下会议 on 2026-05-16 at 3pm",
     });
     const parsed = JSON.parse(result.content[0].text) as { preview: string };
     expect(parsed.preview).toContain("视频会议：无");

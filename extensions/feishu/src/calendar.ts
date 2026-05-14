@@ -488,6 +488,17 @@ function validateDraftParams(
   if (!p.end_time?.trim()) {
     return { ok: false, error: "Missing required field: end_time (ISO 8601 format)" };
   }
+  if (!p.original_text?.trim()) {
+    return {
+      ok: false,
+      error:
+        "Missing required field: original_text. " +
+        "You MUST pass the user's verbatim request text (e.g. '帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟') " +
+        "as original_text so the tool can verify and auto-correct relative date expressions " +
+        "('今天', '明天', '后天', '本周五', '下周一', etc.). " +
+        "Retry create_event_draft with original_text set to the user's original message.",
+    };
+  }
   const calendarId = p.calendar_id?.trim() || defaultCalendarId?.trim() || "";
   if (!calendarId) {
     return {
@@ -675,6 +686,6 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
   );
 
   api.logger.info?.(
-    "feishu_calendar: Registered feishu_calendar (Stage C4.3 — tool-layer relative-date correction)",
+    "feishu_calendar: Registered feishu_calendar (Stage C4.4 — original_text required + tool-layer relative-date correction)",
   );
 }
