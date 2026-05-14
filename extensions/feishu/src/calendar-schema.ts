@@ -55,6 +55,15 @@ export const FeishuCalendarSchema = Type.Object({
         "Set to false only when the user explicitly requests a meeting without video conference.",
     }),
   ),
+  original_text: Type.Optional(
+    Type.String({
+      description:
+        "The user's verbatim request text. " +
+        "REQUIRED when the user uses relative date expressions such as '今天', '明天', '后天', '本周五', '下周一'. " +
+        "The tool parses this text to verify and auto-correct the date resolved in start_time. " +
+        "Example: '帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟'.",
+    }),
+  ),
 });
 
 export type FeishuCalendarParams = Static<typeof FeishuCalendarSchema>;

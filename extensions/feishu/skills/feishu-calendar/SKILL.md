@@ -38,31 +38,31 @@ If the user does not confirm, do not create. If the user edits the details, call
 - After a successful `create_event`, report `meeting_url` (if returned) so the user can join directly.
 - **NEVER claim** a meeting link was created unless `create_event` returns `success: true`.
 
-## Date and Time Handling
+## Date and Time Handling (C4.3 — Tool-Layer Correction)
 
-- **Always resolve relative dates** ("本周五", "明天", "下午两点") to absolute ISO 8601 datetime before calling any tool.
-- **Timezone basis: always use `Asia/Shanghai`** — do NOT use UTC or server local time. The server/container may run in UTC; ignore that. Chinese relative expressions ("今天", "明天", "后天", "本周五", "下周一") must be resolved using the Asia/Shanghai current date.
-- Show the resolved absolute datetime in the draft preview so the user can verify.
+The tool now performs **code-level relative-date correction** — you do not need to perfectly resolve Chinese relative dates yourself.
 
-### Verifying date resolution with `current_date_in_timezone`
+### REQUIRED: always pass `original_text`
 
-Every `create_event_draft` response includes `current_date_in_timezone` (e.g. `"2026-05-14"`) — the actual current date in Asia/Shanghai at the time the tool ran.  
-The draft preview also displays: `🗓️ 日期解析基准：Asia/Shanghai，今天是 YYYY-MM-DD`
+Whenever the user's message contains a relative date expression ("今天", "明天", "后天", "本周五", "下周一", etc.), you **MUST** pass the user's verbatim message as `original_text` in `create_event_draft`.
 
-**After calling `create_event_draft`, always check:**
+The tool will:
 
-| User said            | Draft start date | `current_date_in_timezone` | Action                                |
-| -------------------- | ---------------- | -------------------------- | ------------------------------------- |
-| "明天"               | `2026-05-14`     | `2026-05-14`               | ❌ Wrong — re-draft with `2026-05-15` |
-| "明天"               | `2026-05-15`     | `2026-05-14`               | ✅ Correct                            |
-| "今天"               | `2026-05-14`     | `2026-05-14`               | ✅ Correct                            |
-| "后天"               | `2026-05-16`     | `2026-05-14`               | ✅ Correct                            |
-| "本周五" on Thursday | `2026-05-15`     | `2026-05-14`               | ✅ Correct                            |
+1. Parse `original_text` to detect phrases like "明天".
+2. Resolve the phrase to the correct Asia/Shanghai date (immune to server UTC timezone).
+3. Auto-correct `start_time` / `end_time` if your resolved date was wrong.
+4. Add a correction notice to the preview if a correction was made.
 
-If the start date equals `current_date_in_timezone` but the user said "明天" or "后天", **do not confirm with the user** — silently re-call `create_event_draft` with the corrected date and show the new preview.
+### Your responsibilities
 
-**Example:** Today (Asia/Shanghai) = `2026-05-14`. User says "明天下午4点".
-→ Correct `start_time`: `2026-05-15T16:00:00+08:00`
+- Provide your best-effort `start_time` / `end_time` in ISO 8601 with `+08:00` offset.
+- Always include `original_text` — the tool will catch and fix date errors.
+- Show the returned `preview` verbatim to the user (it includes any correction notice).
+- If the preview shows `⚠️ 已根据原始文本将日期从 … 修正为 …`, present it as-is. Only proceed to `create_event` after the user confirms.
+
+### Timezone
+
+Always use `Asia/Shanghai` (+08:00) when constructing ISO timestamps. The server container runs UTC; the tool corrects for this.
 
 ## Tool Actions
 
@@ -80,12 +80,13 @@ Returns available calendars with their `calendar_id`. Use this when the user ask
 {
   "action": "create_event_draft",
   "title": "产品讨论",
-  "start_time": "2026-05-16T15:00:00+08:00",
-  "end_time": "2026-05-16T16:00:00+08:00",
+  "start_time": "2026-05-15T15:00:00+08:00",
+  "end_time": "2026-05-15T16:00:00+08:00",
   "timezone": "Asia/Shanghai",
   "calendar_id": "optional — omit to use default",
   "description": "optional",
-  "enable_vchat": true
+  "enable_vchat": true,
+  "original_text": "帮我创建一个日程，明天下午3点，产品讨论，1小时"
 }
 ```
 
@@ -95,6 +96,9 @@ The preview will include:
 
 - 标题、时间、时区、日历 ID
 - `📹 视频会议：飞书会议`（enable_vchat=true）或 `📹 视频会议：无`（enable_vchat=false）
+- `🗓️ 日期解析基准：Asia/Shanghai，今天是 YYYY-MM-DD`
+- `⚠️ 已根据原始文本将日期从 … 修正为 …`（如有修正）
+- `ℹ️ 未提供原始文本…`（如未提供 original_text）
 
 ### create_event
 
@@ -115,7 +119,7 @@ If the tool returns an error mentioning "not authorized" or "AINETRIX_CALENDAR_A
 
 **User:** 帮我创建一个日程，明天下午3点，产品讨论，1小时
 
-**Bot (internal):** Today (Asia/Shanghai) = `2026-05-14`, so "明天" = `2026-05-15`. Call `create_event_draft`:
+**Bot (internal):** Best-effort: "明天" ≈ tomorrow. Pass `original_text` so the tool can auto-correct if wrong. Call `create_event_draft`:
 
 ```json
 {
@@ -124,7 +128,8 @@ If the tool returns an error mentioning "not authorized" or "AINETRIX_CALENDAR_A
   "start_time": "2026-05-15T15:00:00+08:00",
   "end_time": "2026-05-15T16:00:00+08:00",
   "timezone": "Asia/Shanghai",
-  "enable_vchat": true
+  "enable_vchat": true,
+  "original_text": "帮我创建一个日程，明天下午3点，产品讨论，1小时"
 }
 ```
 
@@ -182,4 +187,4 @@ Write access is restricted by `AINETRIX_CALENDAR_ALLOWED_USERS`. If not configur
 | Scope                           | Required for                         |
 | ------------------------------- | ------------------------------------ |
 | `calendar:calendar:readonly`    | `list_calendars`                     |
-| `calendar:calendar.event:write` | `create_event` (Stage C4.1 — active) |
+| `calendar:calendar.event:write` | `create_event` (Stage C4.3 — active) |

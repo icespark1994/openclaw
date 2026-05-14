@@ -8,8 +8,11 @@ vi.mock("./client.js", () => ({
 }));
 
 import {
+  addDays,
+  applyRelativeDateCorrection,
   buildEventDraft,
   createCalendarEvent,
+  detectRelativeDate,
   draftStore,
   getCurrentDateInTimezone,
   isUserAllowed,
@@ -266,6 +269,287 @@ describe("buildEventDraft — current_date_in_timezone and preview date basis", 
     const confirmIdx = draft.preview.indexOf("确认");
     expect(dateBasisIdx).toBeGreaterThan(-1);
     expect(confirmIdx).toBeGreaterThan(dateBasisIdx);
+  });
+});
+
+// ── addDays ───────────────────────────────────────────────────────────────────
+
+describe("addDays", () => {
+  it("adds 1 day", () => {
+    expect(addDays("2026-05-14", 1)).toBe("2026-05-15");
+  });
+  it("handles month boundary", () => {
+    expect(addDays("2026-05-31", 1)).toBe("2026-06-01");
+  });
+  it("handles negative days", () => {
+    expect(addDays("2026-05-14", -1)).toBe("2026-05-13");
+  });
+  it("adds 2 days (后天)", () => {
+    expect(addDays("2026-05-14", 2)).toBe("2026-05-16");
+  });
+});
+
+// ── detectRelativeDate ────────────────────────────────────────────────────────
+
+describe("detectRelativeDate", () => {
+  // 2026-05-14T01:00:00Z = 2026-05-14 09:00 Asia/Shanghai → today=2026-05-14 (Thursday)
+  const MOCK_TIME = new Date("2026-05-14T01:00:00Z");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(MOCK_TIME);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("今天 → today", () => {
+    const r = detectRelativeDate("今天下午4点", "Asia/Shanghai");
+    expect(r?.phrase).toBe("今天");
+    expect(r?.resolvedDate).toBe("2026-05-14");
+  });
+
+  it("明天 → tomorrow", () => {
+    const r = detectRelativeDate("帮我创建一个会议，明天下午4点", "Asia/Shanghai");
+    expect(r?.phrase).toBe("明天");
+    expect(r?.resolvedDate).toBe("2026-05-15");
+  });
+
+  it("后天 → day after tomorrow", () => {
+    const r = detectRelativeDate("后天上午10点", "Asia/Shanghai");
+    expect(r?.phrase).toBe("后天");
+    expect(r?.resolvedDate).toBe("2026-05-16");
+  });
+
+  it("本周五 on Thursday 2026-05-14 → 2026-05-15 (Friday)", () => {
+    const r = detectRelativeDate("本周五下午2点", "Asia/Shanghai");
+    expect(r?.phrase).toBe("本周五");
+    expect(r?.resolvedDate).toBe("2026-05-15");
+  });
+
+  it("本周一 on Thursday 2026-05-14 → 2026-05-11 (this Monday)", () => {
+    const r = detectRelativeDate("本周一上午9点", "Asia/Shanghai");
+    expect(r?.phrase).toBe("本周一");
+    expect(r?.resolvedDate).toBe("2026-05-11");
+  });
+
+  it("下周一 on Thursday 2026-05-14 → 2026-05-18", () => {
+    const r = detectRelativeDate("下周一上午10点开会", "Asia/Shanghai");
+    expect(r?.phrase).toBe("下周一");
+    expect(r?.resolvedDate).toBe("2026-05-18");
+  });
+
+  it("下周五 on Thursday 2026-05-14 → 2026-05-22", () => {
+    const r = detectRelativeDate("下周五下午3点", "Asia/Shanghai");
+    expect(r?.phrase).toBe("下周五");
+    expect(r?.resolvedDate).toBe("2026-05-22");
+  });
+
+  it("下周日 on Thursday 2026-05-14 → 2026-05-24", () => {
+    const r = detectRelativeDate("下周日", "Asia/Shanghai");
+    expect(r?.phrase).toBe("下周日");
+    expect(r?.resolvedDate).toBe("2026-05-24");
+  });
+
+  it("returns null for text with no relative date", () => {
+    expect(detectRelativeDate("2026-05-20T10:00:00+08:00", "Asia/Shanghai")).toBeNull();
+  });
+
+  it("prefers 明天 over 本周X when both present (first match wins)", () => {
+    // 明天 is checked before 本周, so it wins
+    const r = detectRelativeDate("明天本周五", "Asia/Shanghai");
+    expect(r?.phrase).toBe("明天");
+  });
+});
+
+// ── applyRelativeDateCorrection ───────────────────────────────────────────────
+
+describe("applyRelativeDateCorrection", () => {
+  const MOCK_TIME = new Date("2026-05-14T01:00:00Z"); // Shanghai = 2026-05-14
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(MOCK_TIME);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("corrects 明天 when LLM passed today (wrong date)", () => {
+    const result = applyRelativeDateCorrection({
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      original_text: "帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟",
+      timezone: "Asia/Shanghai",
+    });
+    expect(result.start_time).toBe("2026-05-15T16:00:00+08:00");
+    expect(result.end_time).toBe("2026-05-15T16:30:00+08:00");
+    expect(result.correction?.corrected).toBe(true);
+    expect(result.correction?.detected_phrase).toBe("明天");
+    expect(result.correction?.expected_date).toBe("2026-05-15");
+    expect(result.correction?.original_date).toBe("2026-05-14");
+  });
+
+  it("does not correct when LLM passed the correct date for 明天", () => {
+    const result = applyRelativeDateCorrection({
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      original_text: "明天下午4点",
+      timezone: "Asia/Shanghai",
+    });
+    expect(result.start_time).toBe("2026-05-15T16:00:00+08:00");
+    expect(result.end_time).toBe("2026-05-15T16:30:00+08:00");
+    expect(result.correction?.corrected).toBe(false);
+  });
+
+  it("corrects 今天 when LLM passed wrong date", () => {
+    const result = applyRelativeDateCorrection({
+      start_time: "2026-05-13T16:00:00+08:00",
+      end_time: "2026-05-13T16:30:00+08:00",
+      original_text: "今天下午4点",
+      timezone: "Asia/Shanghai",
+    });
+    expect(result.start_time).toBe("2026-05-14T16:00:00+08:00");
+    expect(result.end_time).toBe("2026-05-14T16:30:00+08:00");
+    expect(result.correction?.corrected).toBe(true);
+    expect(result.correction?.detected_phrase).toBe("今天");
+  });
+
+  it("corrects 后天 when LLM passed today (2 days off)", () => {
+    const result = applyRelativeDateCorrection({
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      original_text: "后天下午4点",
+      timezone: "Asia/Shanghai",
+    });
+    expect(result.start_time).toBe("2026-05-16T16:00:00+08:00");
+    expect(result.end_time).toBe("2026-05-16T16:30:00+08:00");
+    expect(result.correction?.corrected).toBe(true);
+    expect(result.correction?.detected_phrase).toBe("后天");
+  });
+
+  it("corrects 本周五 on Thursday when LLM passed wrong date", () => {
+    const result = applyRelativeDateCorrection({
+      start_time: "2026-05-14T14:00:00+08:00",
+      end_time: "2026-05-14T15:00:00+08:00",
+      original_text: "本周五下午2点",
+      timezone: "Asia/Shanghai",
+    });
+    expect(result.start_time).toBe("2026-05-15T14:00:00+08:00");
+    expect(result.end_time).toBe("2026-05-15T15:00:00+08:00");
+    expect(result.correction?.corrected).toBe(true);
+    expect(result.correction?.detected_phrase).toBe("本周五");
+  });
+
+  it("corrects 下周一 to 2026-05-18", () => {
+    const result = applyRelativeDateCorrection({
+      start_time: "2026-05-14T10:00:00+08:00",
+      end_time: "2026-05-14T11:00:00+08:00",
+      original_text: "下周一上午10点开会",
+      timezone: "Asia/Shanghai",
+    });
+    expect(result.start_time).toBe("2026-05-18T10:00:00+08:00");
+    expect(result.end_time).toBe("2026-05-18T11:00:00+08:00");
+    expect(result.correction?.detected_phrase).toBe("下周一");
+    expect(result.correction?.expected_date).toBe("2026-05-18");
+  });
+
+  it("preserves duration when correcting (30-minute event)", () => {
+    const result = applyRelativeDateCorrection({
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      original_text: "明天下午4点，30分钟",
+      timezone: "Asia/Shanghai",
+    });
+    // Duration check: 30 minutes preserved across the date shift
+    const newStart = new Date(result.start_time);
+    const newEnd = new Date(result.end_time);
+    expect(newEnd.getTime() - newStart.getTime()).toBe(30 * 60 * 1000);
+  });
+
+  it("returns null correction when text has no relative date", () => {
+    const result = applyRelativeDateCorrection({
+      start_time: "2026-05-16T10:00:00+08:00",
+      end_time: "2026-05-16T11:00:00+08:00",
+      original_text: "2026年5月16日上午10点",
+      timezone: "Asia/Shanghai",
+    });
+    expect(result.correction).toBeNull();
+    expect(result.start_time).toBe("2026-05-16T10:00:00+08:00");
+  });
+});
+
+// ── buildEventDraft — original_text / correction ──────────────────────────────
+
+describe("buildEventDraft — original_text correction", () => {
+  const MOCK_TIME = new Date("2026-05-14T01:00:00Z"); // Shanghai = 2026-05-14
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(MOCK_TIME);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("corrects start/end when LLM passes wrong date for '明天'", () => {
+    const draft = buildEventDraft({
+      title: "办公室讨论",
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      calendar_id: "cal_abc",
+      original_text: "帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟",
+    });
+    expect(draft.start_time).toBe("2026-05-15T16:00:00+08:00");
+    expect(draft.end_time).toBe("2026-05-15T16:30:00+08:00");
+    expect(draft.relative_date_correction?.corrected).toBe(true);
+  });
+
+  it("preview shows correction warning when date was wrong", () => {
+    const draft = buildEventDraft({
+      title: "线下会议",
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      calendar_id: "cal_abc",
+      original_text: "明天下午4点",
+    });
+    expect(draft.preview).toContain("已根据原始文本将日期从 2026-05-14 修正为 2026-05-15");
+    expect(draft.preview).toContain("明天");
+  });
+
+  it("preview shows no correction warning when date was already correct", () => {
+    const draft = buildEventDraft({
+      title: "线下会议",
+      start_time: "2026-05-15T16:00:00+08:00",
+      end_time: "2026-05-15T16:30:00+08:00",
+      calendar_id: "cal_abc",
+      original_text: "明天下午4点",
+    });
+    expect(draft.preview).not.toContain("修正");
+    expect(draft.relative_date_correction?.corrected).toBe(false);
+  });
+
+  it("preview shows '未提供原始文本' warning when original_text is absent", () => {
+    const draft = buildEventDraft({
+      title: "Meeting",
+      start_time: "2026-05-15T10:00:00+08:00",
+      end_time: "2026-05-15T11:00:00+08:00",
+      calendar_id: "cal_abc",
+    });
+    expect(draft.preview).toContain("未提供原始文本");
+    expect(draft.relative_date_correction).toBeUndefined();
+  });
+
+  it("does not show '未提供原始文本' when original_text is provided but has no relative date", () => {
+    const draft = buildEventDraft({
+      title: "Meeting",
+      start_time: "2026-05-16T10:00:00+08:00",
+      end_time: "2026-05-16T11:00:00+08:00",
+      calendar_id: "cal_abc",
+      original_text: "2026年5月16日上午10点开会",
+    });
+    expect(draft.preview).not.toContain("未提供原始文本");
+    expect(draft.preview).not.toContain("修正");
   });
 });
 
@@ -852,6 +1136,80 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
     const result = await tool.execute("list-call", { action: "list_calendars" });
     const parsed = JSON.parse(result.content[0].text) as { calendars: unknown[] };
     expect(parsed.calendars).toHaveLength(1);
+  });
+
+  it("create_event_draft corrects '明天' when LLM passes wrong date", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T01:00:00Z")); // Shanghai = 2026-05-14
+    const tool = await buildTool();
+    const result = await tool.execute("draft-correct", {
+      action: "create_event_draft",
+      title: "办公室讨论",
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      original_text: "帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟",
+    });
+    const parsed = JSON.parse(result.content[0].text) as {
+      draft: Record<string, unknown>;
+      preview: string;
+    };
+    const draft = parsed.draft as Record<string, unknown>;
+    // Tool must correct to 2026-05-15
+    expect(draft.start_time).toBe("2026-05-15T16:00:00+08:00");
+    expect(draft.end_time).toBe("2026-05-15T16:30:00+08:00");
+    expect(parsed.preview).toContain("已根据原始文本将日期从 2026-05-14 修正为 2026-05-15");
+    const correction = draft.relative_date_correction as Record<string, unknown>;
+    expect(correction?.corrected).toBe(true);
+    vi.useRealTimers();
+  });
+
+  it("create_event uses corrected times from draft (not original LLM times)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-05-14T01:00:00Z")); // Shanghai = 2026-05-14
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: {
+        event: {
+          event_id: "evt_corrected",
+          summary: "办公室讨论",
+          start_time: { timezone: "Asia/Shanghai" },
+        },
+      },
+    });
+    const tool = await buildTool();
+    // Draft created with wrong date — tool corrects to May 15
+    const draftResult = await tool.execute("draft-cor", {
+      action: "create_event_draft",
+      title: "办公室讨论",
+      start_time: "2026-05-14T16:00:00+08:00",
+      end_time: "2026-05-14T16:30:00+08:00",
+      original_text: "明天下午4点办公室讨论",
+    });
+    const draftParsed = JSON.parse(draftResult.content[0].text) as {
+      draft: { draft_id: string; start_time: string };
+    };
+    expect(draftParsed.draft.start_time).toBe("2026-05-15T16:00:00+08:00");
+    const draftId = draftParsed.draft.draft_id;
+
+    // Keep fake timers active so the draft's created_at is still within TTL
+    await tool.execute("create-cor", { action: "create_event", draft_id: draftId });
+    const callArg = calendarEventCreateMock.mock.calls[0][0];
+    // Corrected start_time 2026-05-15T16:00:00+08:00
+    const expectedTs = String(Math.floor(new Date("2026-05-15T16:00:00+08:00").getTime() / 1000));
+    expect(callArg.data.start_time.timestamp).toBe(expectedTs);
+    vi.useRealTimers();
+  });
+
+  it("create_event_draft without original_text shows 未提供原始文本 in preview", async () => {
+    const tool = await buildTool();
+    const result = await tool.execute("draft-no-text", {
+      action: "create_event_draft",
+      title: "Meeting",
+      start_time: "2026-05-16T10:00:00+08:00",
+      end_time: "2026-05-16T11:00:00+08:00",
+    });
+    const parsed = JSON.parse(result.content[0].text) as { preview: string };
+    expect(parsed.preview).toContain("未提供原始文本");
   });
 
   it("create_event_draft response includes current_date_in_timezone", async () => {

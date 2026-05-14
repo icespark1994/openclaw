@@ -27,6 +27,159 @@ export function getCurrentDateInTimezone(timezone: string): string {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
+// ── Relative date parsing (C4.3) ─────────────────────────────────────────────
+
+/** JS day index: 0=Sun 1=Mon … 6=Sat */
+const WEEKDAY_MAP: Record<string, number> = {
+  一: 1,
+  二: 2,
+  三: 3,
+  四: 4,
+  五: 5,
+  六: 6,
+  日: 0,
+  天: 0,
+};
+
+/** Add `days` to a YYYY-MM-DD string using UTC arithmetic to stay timezone-safe. */
+export function addDays(dateStr: string, days: number): string {
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const dt = new Date(Date.UTC(y!, m! - 1, d! + days));
+  return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, "0")}-${String(dt.getUTCDate()).padStart(2, "0")}`;
+}
+
+/** Days from `fromDate` to `toDate` (positive = future). Both YYYY-MM-DD. */
+function dateDiffInDays(fromDate: string, toDate: string): number {
+  const [fy, fm, fd] = fromDate.split("-").map(Number);
+  const [ty, tm, td] = toDate.split("-").map(Number);
+  return Math.round((Date.UTC(ty!, tm! - 1, td!) - Date.UTC(fy!, fm! - 1, fd!)) / 86_400_000);
+}
+
+/** Replace date portion of an ISO 8601 string by shifting by `days`. */
+function shiftDateInISO(isoString: string, days: number): string {
+  const match = isoString.match(/^(\d{4}-\d{2}-\d{2})(T.+)$/);
+  if (!match) return isoString;
+  return addDays(match[1]!, days) + match[2]!;
+}
+
+/**
+ * Resolve targetWeekday (0=Sun … 6=Sat) within the ISO week (Mon–Sun)
+ * that is either the current week ("this-week") or the next ("next-week").
+ * `todayStr` is YYYY-MM-DD (Asia/Shanghai).
+ */
+function getWeekdayDate(
+  todayStr: string,
+  targetWeekday: number,
+  mode: "this-week" | "next-week",
+): string {
+  const [y, m, d] = todayStr.split("-").map(Number);
+  const todayMs = Date.UTC(y!, m! - 1, d!);
+  const todayDow = new Date(todayMs).getUTCDay(); // 0=Sun … 6=Sat
+
+  // Days since Monday of the current week (Sun wraps to -6 → treated as 6th day)
+  const sinceMonday = todayDow === 0 ? 6 : todayDow - 1;
+  const thisMondayMs = todayMs - sinceMonday * 86_400_000;
+  const baseMondayMs = mode === "this-week" ? thisMondayMs : thisMondayMs + 7 * 86_400_000;
+
+  // Target offset from Monday: Mon=0 … Sat=5, Sun=6
+  const daysFromMonday = targetWeekday === 0 ? 6 : targetWeekday - 1;
+  const targetMs = baseMondayMs + daysFromMonday * 86_400_000;
+  const targetDate = new Date(targetMs);
+  return `${targetDate.getUTCFullYear()}-${String(targetDate.getUTCMonth() + 1).padStart(2, "0")}-${String(targetDate.getUTCDate()).padStart(2, "0")}`;
+}
+
+export type RelativeDateMatch = { phrase: string; resolvedDate: string };
+
+/**
+ * Scan `text` for the first recognised Chinese relative-date expression and
+ * resolve it to YYYY-MM-DD in `timezone`.  Returns null if none found.
+ *
+ * Supported: 今天 明天 后天 本周一…日/天 下周一…日/天
+ */
+export function detectRelativeDate(text: string, timezone: string): RelativeDateMatch | null {
+  const today = getCurrentDateInTimezone(timezone);
+
+  if (text.includes("今天")) return { phrase: "今天", resolvedDate: today };
+  if (text.includes("明天")) return { phrase: "明天", resolvedDate: addDays(today, 1) };
+  if (text.includes("后天")) return { phrase: "后天", resolvedDate: addDays(today, 2) };
+
+  const nextWeekM = text.match(/下周([一二三四五六日天])/);
+  if (nextWeekM) {
+    const wd = WEEKDAY_MAP[nextWeekM[1]!];
+    if (wd !== undefined)
+      return {
+        phrase: `下周${nextWeekM[1]!}`,
+        resolvedDate: getWeekdayDate(today, wd, "next-week"),
+      };
+  }
+
+  const thisWeekM = text.match(/本周([一二三四五六日天])/);
+  if (thisWeekM) {
+    const wd = WEEKDAY_MAP[thisWeekM[1]!];
+    if (wd !== undefined)
+      return {
+        phrase: `本周${thisWeekM[1]!}`,
+        resolvedDate: getWeekdayDate(today, wd, "this-week"),
+      };
+  }
+
+  return null;
+}
+
+export type DateCorrectionInfo = {
+  detected_phrase: string;
+  expected_date: string;
+  original_date: string;
+  corrected: boolean;
+};
+
+/**
+ * If `original_text` contains a Chinese relative-date expression and the date
+ * in `start_time` doesn't match, shift both `start_time` and `end_time` by
+ * the same number of days (preserving duration and time-of-day).
+ */
+export function applyRelativeDateCorrection(params: {
+  start_time: string;
+  end_time: string;
+  original_text: string;
+  timezone: string;
+}): { start_time: string; end_time: string; correction: DateCorrectionInfo | null } {
+  const { start_time, end_time, original_text, timezone } = params;
+
+  const match = detectRelativeDate(original_text, timezone);
+  if (!match) return { start_time, end_time, correction: null };
+
+  const { phrase, resolvedDate } = match;
+  const startDateM = start_time.match(/^(\d{4}-\d{2}-\d{2})/);
+  if (!startDateM) return { start_time, end_time, correction: null };
+
+  const originalDate = startDateM[1]!;
+  if (originalDate === resolvedDate) {
+    return {
+      start_time,
+      end_time,
+      correction: {
+        detected_phrase: phrase,
+        expected_date: resolvedDate,
+        original_date: originalDate,
+        corrected: false,
+      },
+    };
+  }
+
+  const dayDiff = dateDiffInDays(originalDate, resolvedDate);
+  return {
+    start_time: shiftDateInISO(start_time, dayDiff),
+    end_time: shiftDateInISO(end_time, dayDiff),
+    correction: {
+      detected_phrase: phrase,
+      expected_date: resolvedDate,
+      original_date: originalDate,
+      corrected: true,
+    },
+  };
+}
+
 function json(data: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -77,6 +230,7 @@ export type DraftEntry = {
   source_user: string | undefined;
   source_channel: string | undefined;
   created_at: number;
+  relative_date_correction?: DateCorrectionInfo;
 };
 
 // In-memory draft store; resets on gateway restart (acceptable for Phase 1).
@@ -93,8 +247,10 @@ export type CalendarEventDraft = {
   description: string;
   enable_vchat: boolean;
   attendees: never[];
-  /** Current date in the event timezone — lets the LLM verify its relative-date resolution. */
+  /** Current date in the event timezone (Asia/Shanghai). */
   current_date_in_timezone: string;
+  /** Set when original_text was provided and a relative-date phrase was detected. */
+  relative_date_correction?: DateCorrectionInfo;
   preview: string;
 };
 
@@ -106,28 +262,51 @@ export function buildEventDraft(params: {
   calendar_id: string;
   description?: string;
   enable_vchat?: boolean;
+  /** User's verbatim request — used for code-level relative-date correction (C4.3). */
+  original_text?: string;
 }): CalendarEventDraft {
   const tz = params.timezone?.trim() || DEFAULT_TIMEZONE;
   const enableVchat = params.enable_vchat !== false; // default true
   const currentDate = getCurrentDateInTimezone(tz);
+  const hasOriginalText = Boolean(params.original_text?.trim());
+
+  let startTime = params.start_time;
+  let endTime = params.end_time;
+  let correction: DateCorrectionInfo | undefined;
+
+  if (hasOriginalText) {
+    const result = applyRelativeDateCorrection({
+      start_time: params.start_time,
+      end_time: params.end_time,
+      original_text: params.original_text!,
+      timezone: tz,
+    });
+    startTime = result.start_time;
+    endTime = result.end_time;
+    correction = result.correction ?? undefined;
+  }
+
   return {
     title: params.title,
-    start_time: params.start_time,
-    end_time: params.end_time,
+    start_time: startTime,
+    end_time: endTime,
     timezone: tz,
     calendar_id: params.calendar_id,
     description: params.description ?? "",
     enable_vchat: enableVchat,
     attendees: [],
     current_date_in_timezone: currentDate,
+    ...(correction ? { relative_date_correction: correction } : {}),
     preview: formatDraftPreview({
       title: params.title,
-      start_time: params.start_time,
-      end_time: params.end_time,
+      start_time: startTime,
+      end_time: endTime,
       timezone: tz,
       calendar_id: params.calendar_id,
       enable_vchat: enableVchat,
       current_date: currentDate,
+      correction,
+      hasOriginalText,
     }),
   };
 }
@@ -140,8 +319,20 @@ function formatDraftPreview(params: {
   calendar_id: string;
   enable_vchat: boolean;
   current_date: string;
+  correction?: DateCorrectionInfo;
+  hasOriginalText: boolean;
 }): string {
   const vchatLine = params.enable_vchat ? "📹 视频会议：飞书会议\n" : "📹 视频会议：无\n";
+
+  let correctionLine = "";
+  if (params.correction?.corrected) {
+    correctionLine =
+      `⚠️ 已根据原始文本将日期从 ${params.correction.original_date} ` +
+      `修正为 ${params.correction.expected_date}（识别到"${params.correction.detected_phrase}"）\n`;
+  } else if (!params.hasOriginalText) {
+    correctionLine = `ℹ️ 未提供原始文本（original_text），无法进行相对日期代码级校验\n`;
+  }
+
   return (
     `我准备创建以下日程：\n` +
     `📅 标题：${params.title}\n` +
@@ -150,8 +341,9 @@ function formatDraftPreview(params: {
     `📆 日历 ID：${params.calendar_id}\n` +
     vchatLine +
     `👥 参与人：仅你（本阶段不支持邀请他人）\n` +
-    `🗓️ 日期解析基准：${params.timezone}，今天是 ${params.current_date}\n\n` +
-    `请回复「确认」/ "confirm" / "yes" 后创建日程。`
+    `🗓️ 日期解析基准：${params.timezone}，今天是 ${params.current_date}\n` +
+    correctionLine +
+    `\n请回复「确认」/ "confirm" / "yes" 后创建日程。`
   );
 }
 
@@ -371,6 +563,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                   calendar_id: validation.calendarId,
                   description: p.description,
                   enable_vchat: p.enable_vchat,
+                  original_text: p.original_text,
                 });
 
                 const draftId = randomUUID();
@@ -482,6 +675,6 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
   );
 
   api.logger.info?.(
-    "feishu_calendar: Registered feishu_calendar (Stage C4.1 — vchat enabled by default)",
+    "feishu_calendar: Registered feishu_calendar (Stage C4.3 — tool-layer relative-date correction)",
   );
 }
