@@ -66,6 +66,33 @@ export const FeishuCalendarSchema = Type.Object({
         "Example: '帮我创建一个线下会议，明天下午4点，办公室讨论，30分钟'.",
     }),
   ),
+  attendees: Type.Optional(
+    Type.Array(
+      Type.Object({
+        name: Type.Optional(
+          Type.String({
+            description:
+              "Display name of the attendee as the user wrote it (e.g. 'Alan', 'Peter', '张三').",
+          }),
+        ),
+        open_id: Type.Optional(
+          Type.String({
+            description:
+              "Feishu user open_id (starts with 'ou_'). " +
+              "If omitted, the tool will try to resolve `name` via AINETRIX_CALENDAR_ATTENDEE_MAP.",
+          }),
+        ),
+      }),
+      {
+        description:
+          "Optional list of attendees the user wants to invite. " +
+          "Phase 1 supports user-type attendees only — no rooms, no chats, no external emails. " +
+          "The tool also auto-extracts names from `original_text` (e.g. '邀请 Alan 和 Peter'). " +
+          "Names without a mapping in AINETRIX_CALENDAR_ATTENDEE_MAP are shown to the user as " +
+          "'unresolved' on the draft and will NOT be invited.",
+      },
+    ),
+  ),
 });
 
 export type FeishuCalendarParams = Static<typeof FeishuCalendarSchema>;

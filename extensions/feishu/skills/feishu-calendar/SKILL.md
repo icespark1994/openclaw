@@ -196,9 +196,44 @@ If the user says "线下会议", "不要视频会议", "no video conference", or
 
 The preview will show `📹 视频会议：无`.
 
-## Attendees
+## Attendees (C5 — explicit user invites only)
 
-Phase 1 does not support inviting attendees. If the user asks to invite others, explain this is not yet available and create the event for the user only.
+The tool supports inviting **explicitly-named user attendees** via the
+`attendees` parameter on `create_event_draft`. The tool resolves names through
+the operator-controlled env map `AINETRIX_CALENDAR_ATTENDEE_MAP`.
+
+**Phase 1 supports only user-type attendees (Feishu open_id).** It does NOT
+support:
+
+- Meeting rooms
+- Chats / groups
+- Departments
+- External email addresses
+
+### Rules
+
+1. If the user mentions specific people ("邀请 Alan", "参会人 Alan、Peter",
+   "invite Alan and Peter"), you may pass them as `attendees: [{name: "Alan"}, ...]`.
+   The tool **also auto-extracts** names from `original_text`, so even if you forget,
+   the tool will try to resolve from the user's verbatim text.
+2. Each attendee is resolved against `AINETRIX_CALENDAR_ATTENDEE_MAP`. Resolved
+   names get an `open_id`; unmatched names are kept on the draft as `unresolved`.
+3. The draft preview shows:
+   - `👥 已解析参会人（确认后将邀请）：…`
+   - `⚠️ 未解析参会人：…`（如有）
+4. After confirmation, `create_event` first creates the event, then calls the
+   Feishu attendee API to invite **only the resolved attendees**. Unresolved
+   names are NEVER invited.
+5. The success response includes:
+   - `invited_attendees`: who was actually invited
+   - `not_invited_attendees`: name + reason (unresolved, or API failure)
+   - `attendee_partial_failure: true` (only if the attendee API failed; the
+     event itself is still created)
+6. **Do NOT claim someone was invited** unless they appear in `invited_attendees`.
+   If a name is in `not_invited_attendees`, tell the user explicitly that this
+   person was not invited and why.
+7. Direct `open_id` passthrough is allowed in the `attendees` array if you
+   already have a trusted `ou_…` id. The tool will skip the env-map lookup.
 
 ## Configuration
 
@@ -206,9 +241,17 @@ The default calendar is set via `AINETRIX_FEISHU_DEFAULT_CALENDAR_ID`. If this v
 
 Write access is restricted by `AINETRIX_CALENDAR_ALLOWED_USERS`. If not configured, `create_event` will be rejected.
 
+Attendee resolution uses `AINETRIX_CALENDAR_ATTENDEE_MAP`, either:
+
+- Semicolon-delimited: `Alan=ou_xxx;Peter=ou_yyy;张三=ou_zzz`
+- JSON: `{"Alan":"ou_xxx","Peter":"ou_yyy"}`
+
+If unset, all attendees fall through as `unresolved` and nobody gets invited.
+
 ## Required Feishu App Permissions
 
-| Scope                           | Required for                         |
-| ------------------------------- | ------------------------------------ |
-| `calendar:calendar:readonly`    | `list_calendars`                     |
-| `calendar:calendar.event:write` | `create_event` (Stage C4.3 — active) |
+| Scope                                    | Required for                            |
+| ---------------------------------------- | --------------------------------------- |
+| `calendar:calendar:readonly`             | `list_calendars`                        |
+| `calendar:calendar.event:write`          | `create_event` (active since C4)        |
+| `calendar:calendar.event.attendee:write` | invite attendees in `create_event` (C5) |

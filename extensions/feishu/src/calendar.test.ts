@@ -15,10 +15,15 @@ import {
   detectOfflineMeetingIntent,
   detectRelativeDate,
   draftStore,
+  extractAttendeeNamesFromText,
   getCurrentDateInTimezone,
   isUserAllowed,
   listCalendars,
+  maskOpenId,
   parseAllowedUsers,
+  parseAttendeeMap,
+  resolveAttendees,
+  type AttendeeEntry,
   type DraftEntry,
 } from "./calendar.js";
 
@@ -644,6 +649,279 @@ describe("buildEventDraft — offline auto-disable vchat (C4.5)", () => {
   });
 });
 
+// ── parseAttendeeMap (C5) ─────────────────────────────────────────────────────
+
+describe("parseAttendeeMap", () => {
+  it("returns empty map for undefined", () => {
+    expect(parseAttendeeMap(undefined).size).toBe(0);
+  });
+
+  it("returns empty map for empty string", () => {
+    expect(parseAttendeeMap("").size).toBe(0);
+  });
+
+  it("parses semicolon-delimited Name=open_id pairs", () => {
+    const m = parseAttendeeMap("Alan=ou_xxx;Peter=ou_yyy;张三=ou_zzz");
+    expect(m.size).toBe(3);
+    expect(m.get("alan")).toBe("ou_xxx");
+    expect(m.get("peter")).toBe("ou_yyy");
+    expect(m.get("张三")).toBe("ou_zzz");
+  });
+
+  it("normalizes keys to lowercase for case-insensitive lookup", () => {
+    const m = parseAttendeeMap("ALAN=ou_aaa");
+    expect(m.get("alan")).toBe("ou_aaa");
+    expect(m.get("Alan".toLowerCase())).toBe("ou_aaa");
+  });
+
+  it("trims whitespace around keys and values", () => {
+    const m = parseAttendeeMap("  Alan  =  ou_xxx  ");
+    expect(m.get("alan")).toBe("ou_xxx");
+  });
+
+  it("parses JSON form", () => {
+    const m = parseAttendeeMap('{"Alan":"ou_xxx","Peter":"ou_yyy"}');
+    expect(m.get("alan")).toBe("ou_xxx");
+    expect(m.get("peter")).toBe("ou_yyy");
+  });
+
+  it("returns empty map on invalid JSON", () => {
+    expect(parseAttendeeMap("{not json").size).toBe(0);
+  });
+
+  it("skips malformed pairs without equals sign", () => {
+    const m = parseAttendeeMap("Alan=ou_xxx;invalid_no_equals;Peter=ou_yyy");
+    expect(m.size).toBe(2);
+    expect(m.get("alan")).toBe("ou_xxx");
+    expect(m.get("peter")).toBe("ou_yyy");
+  });
+});
+
+// ── maskOpenId (C5) ───────────────────────────────────────────────────────────
+
+describe("maskOpenId", () => {
+  it("masks long open_ids keeping first 4 + last 4", () => {
+    expect(maskOpenId("ou_a6df52e8406f46ead2ea7e03d9ea79b4")).toBe("ou_a…79b4");
+  });
+
+  it("returns *** for short ids", () => {
+    expect(maskOpenId("short")).toBe("***");
+  });
+});
+
+// ── extractAttendeeNamesFromText (C5) ─────────────────────────────────────────
+
+describe("extractAttendeeNamesFromText", () => {
+  it("returns [] for undefined / empty", () => {
+    expect(extractAttendeeNamesFromText(undefined)).toEqual([]);
+    expect(extractAttendeeNamesFromText("")).toEqual([]);
+  });
+
+  it("extracts a single Chinese '邀请 Alan'", () => {
+    expect(extractAttendeeNamesFromText("邀请 Alan")).toEqual(["Alan"]);
+  });
+
+  it("extracts comma-separated Chinese names", () => {
+    expect(extractAttendeeNamesFromText("参会人 Alan、Peter")).toEqual(["Alan", "Peter"]);
+  });
+
+  it("handles Chinese 和 / 与 connectors", () => {
+    expect(extractAttendeeNamesFromText("叫 Alan 和 Peter 参加")).toEqual(["Alan", "Peter"]);
+  });
+
+  it("handles English 'invite X and Y'", () => {
+    expect(extractAttendeeNamesFromText("invite Alan and Peter")).toEqual(["Alan", "Peter"]);
+  });
+
+  it("handles English 'invite X, Y'", () => {
+    const names = extractAttendeeNamesFromText("Please invite Alan, Peter");
+    expect(names).toContain("Alan");
+    expect(names).toContain("Peter");
+  });
+
+  it("handles 'attendees:' label", () => {
+    expect(extractAttendeeNamesFromText("attendees: Alan and Peter")).toEqual(["Alan", "Peter"]);
+  });
+
+  it("strips trailing 等", () => {
+    expect(extractAttendeeNamesFromText("邀请 Alan、Peter 等")).toEqual(["Alan", "Peter"]);
+  });
+
+  it("does not extract anything from plain meeting text", () => {
+    expect(extractAttendeeNamesFromText("帮我创建一个会议，明天下午3点，产品讨论")).toEqual([]);
+  });
+
+  it("deduplicates names case-insensitively", () => {
+    expect(extractAttendeeNamesFromText("邀请 Alan 和 alan")).toEqual(["Alan"]);
+  });
+
+  it("returns names in order of appearance", () => {
+    expect(extractAttendeeNamesFromText("邀请 Peter、Alan")).toEqual(["Peter", "Alan"]);
+  });
+});
+
+// ── resolveAttendees (C5) ─────────────────────────────────────────────────────
+
+describe("resolveAttendees", () => {
+  const map = parseAttendeeMap("Alan=ou_alan_123;Peter=ou_peter_456;张三=ou_zhang_789");
+
+  it("returns [] when no source has attendees", () => {
+    expect(resolveAttendees({ original_text: "no people", provided: [], map })).toEqual([]);
+  });
+
+  it("resolves a name from original_text via env map", () => {
+    const r = resolveAttendees({ original_text: "邀请 Alan", provided: [], map });
+    expect(r).toHaveLength(1);
+    expect(r[0]?.status).toBe("resolved");
+    expect(r[0]?.name).toBe("Alan");
+    expect(r[0]?.open_id).toBe("ou_alan_123");
+    expect(r[0]?.source).toBe("env_map");
+  });
+
+  it("marks unmapped names as unresolved with no open_id", () => {
+    const r = resolveAttendees({ original_text: "邀请 Unknown", provided: [], map });
+    expect(r).toHaveLength(1);
+    expect(r[0]?.status).toBe("unresolved");
+    expect(r[0]?.open_id).toBeUndefined();
+  });
+
+  it("mixes resolved + unresolved in the same call", () => {
+    const r = resolveAttendees({
+      original_text: "参会人 Alan、Unknown、Peter",
+      provided: [],
+      map,
+    });
+    expect(r.map((a) => a.name)).toEqual(["Alan", "Unknown", "Peter"]);
+    expect(r.map((a) => a.status)).toEqual(["resolved", "unresolved", "resolved"]);
+  });
+
+  it("trusts LLM-provided open_id without env-map lookup", () => {
+    const r = resolveAttendees({
+      original_text: "",
+      provided: [{ name: "DirectId", open_id: "ou_explicit_999" }],
+      map,
+    });
+    expect(r).toHaveLength(1);
+    expect(r[0]?.status).toBe("resolved");
+    expect(r[0]?.open_id).toBe("ou_explicit_999");
+  });
+
+  it("resolves LLM-provided name through env map when open_id is absent", () => {
+    const r = resolveAttendees({
+      original_text: "",
+      provided: [{ name: "Alan" }],
+      map,
+    });
+    expect(r[0]?.open_id).toBe("ou_alan_123");
+    expect(r[0]?.status).toBe("resolved");
+  });
+
+  it("does not duplicate when LLM-provided + extracted yield same person", () => {
+    const r = resolveAttendees({
+      original_text: "邀请 Alan",
+      provided: [{ name: "Alan" }],
+      map,
+    });
+    expect(r).toHaveLength(1);
+    expect(r[0]?.open_id).toBe("ou_alan_123");
+  });
+
+  it("handles Chinese name (张三) lookup", () => {
+    const r = resolveAttendees({
+      original_text: "邀请 张三",
+      provided: [],
+      map,
+    });
+    expect(r[0]?.open_id).toBe("ou_zhang_789");
+  });
+
+  it("returns empty when env map is empty", () => {
+    const r = resolveAttendees({
+      original_text: "邀请 Alan",
+      provided: [],
+      map: new Map(),
+    });
+    expect(r).toHaveLength(1);
+    expect(r[0]?.status).toBe("unresolved");
+  });
+});
+
+// ── buildEventDraft — attendees (C5) ──────────────────────────────────────────
+
+describe("buildEventDraft — attendees (C5)", () => {
+  const map = parseAttendeeMap("Alan=ou_alan_123;Peter=ou_peter_456");
+
+  it("stores resolved attendees on the draft", () => {
+    const d = buildEventDraft({
+      title: "产品讨论",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      calendar_id: "cal_x",
+      original_text: "帮我创建一个会议，明天下午3点，产品讨论，1小时，邀请 Alan",
+      attendee_map: map,
+    });
+    expect(d.attendees).toHaveLength(1);
+    expect(d.attendees[0]?.status).toBe("resolved");
+    expect(d.attendees[0]?.open_id).toBe("ou_alan_123");
+  });
+
+  it("preview shows resolved attendees", () => {
+    const d = buildEventDraft({
+      title: "Sync",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      calendar_id: "cal_x",
+      original_text: "邀请 Alan 和 Peter 参加",
+      attendee_map: map,
+    });
+    expect(d.preview).toContain("已解析参会人");
+    expect(d.preview).toContain("Alan");
+    expect(d.preview).toContain("Peter");
+  });
+
+  it("preview separates unresolved attendees and warns they will NOT be invited", () => {
+    const d = buildEventDraft({
+      title: "Sync",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      calendar_id: "cal_x",
+      original_text: "邀请 Alan 和 Stranger",
+      attendee_map: map,
+    });
+    expect(d.preview).toContain("Alan");
+    expect(d.preview).toContain("⚠️ 未解析参会人");
+    expect(d.preview).toContain("Stranger");
+    expect(d.preview).toContain("*不会* 被邀请");
+  });
+
+  it("preview keeps '仅你' wording when no attendees", () => {
+    const d = buildEventDraft({
+      title: "Solo",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      calendar_id: "cal_x",
+      original_text: "帮我创建一个会议，明天下午3点",
+      attendee_map: map,
+    });
+    expect(d.attendees).toEqual([]);
+    expect(d.preview).toContain("仅你");
+  });
+
+  it("accepts LLM-provided attendees with open_id", () => {
+    const d = buildEventDraft({
+      title: "Direct",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      calendar_id: "cal_x",
+      original_text: "schedule a meeting",
+      attendees: [{ name: "RawAlan", open_id: "ou_rawopen" }],
+      attendee_map: new Map(),
+    });
+    expect(d.attendees[0]?.status).toBe("resolved");
+    expect(d.attendees[0]?.open_id).toBe("ou_rawopen");
+  });
+});
+
 // ── buildEventDraft — original_text / correction ──────────────────────────────
 
 describe("buildEventDraft — original_text correction", () => {
@@ -874,6 +1152,7 @@ describe("createCalendarEvent", () => {
     source_user: "ou_abc123",
     source_channel: "feishu",
     created_at: Date.now(),
+    attendees: [],
   };
 
   it("returns error when calendarEvent API unavailable", async () => {
@@ -1607,5 +1886,312 @@ describe("create_event via registerFeishuCalendarTools (C4)", () => {
     expect(parsed.success).toBe(true);
     expect(parsed.vchat_enabled).toBe(true);
     expect(parsed.meeting_url).toBe("https://vc.feishu.cn/j/123");
+  });
+});
+
+// ── attendee invitation via tool (C5) ─────────────────────────────────────────
+
+describe("attendee invitation via registerFeishuCalendarTools (C5)", () => {
+  const calendarEventCreateMock = vi.fn();
+  const calendarEventAttendeeCreateMock = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    draftStore.clear();
+    calendarEventCreateMock.mockResolvedValue({
+      code: 0,
+      data: {
+        event: {
+          event_id: "evt_c5_1",
+          summary: "产品讨论",
+          start_time: { timezone: "Asia/Shanghai" },
+          vchat: { vc_type: "vc", meeting_url: "https://vc.feishu.cn/j/c5" },
+          app_link: "lark://calendar/c5",
+        },
+      },
+    });
+    calendarEventAttendeeCreateMock.mockResolvedValue({ code: 0, data: {} });
+    createFeishuClientMock.mockReturnValue({
+      calendar: {
+        calendarEvent: { create: calendarEventCreateMock },
+        calendarEventAttendee: { create: calendarEventAttendeeCreateMock },
+      },
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    draftStore.clear();
+  });
+
+  async function buildTool(env: { attendeeMap?: string } = {}) {
+    vi.stubEnv("AINETRIX_FEISHU_DEFAULT_CALENDAR_ID", "cal_default");
+    vi.stubEnv("AINETRIX_CALENDAR_ALLOWED_USERS", "feishu:ou_abc");
+    if (env.attendeeMap !== undefined) {
+      vi.stubEnv("AINETRIX_CALENDAR_ATTENDEE_MAP", env.attendeeMap);
+    }
+    const toolFactories: Array<(ctx: unknown) => { name: string; execute: Function }> = [];
+    const mockApi = {
+      config: {
+        channels: {
+          feishu: {
+            enabled: true,
+            accounts: { default: { enabled: true, appId: "x", appSecret: "y" } },
+          },
+        },
+      },
+      logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+      registerTool: (factory: (ctx: unknown) => unknown) => {
+        toolFactories.push(factory as (ctx: unknown) => { name: string; execute: Function });
+      },
+    };
+    const { registerFeishuCalendarTools } = await import("./calendar.js");
+    registerFeishuCalendarTools(mockApi as never);
+    return toolFactories[0]!({
+      agentAccountId: undefined,
+      requesterSenderId: "ou_abc",
+      messageChannel: "feishu",
+    });
+  }
+
+  it("draft preview shows resolved Alan when AINETRIX_CALENDAR_ATTENDEE_MAP includes Alan", async () => {
+    const tool = await buildTool({ attendeeMap: "Alan=ou_alan_123" });
+    const result = await tool.execute("draft-c5", {
+      action: "create_event_draft",
+      title: "产品讨论",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "帮我创建一个会议，明天下午3点，产品讨论，1小时，邀请 Alan",
+    });
+    const parsed = JSON.parse(result.content[0].text) as {
+      draft: { attendees: AttendeeEntry[]; draft_id: string };
+      preview: string;
+    };
+    expect(parsed.draft.attendees).toHaveLength(1);
+    expect(parsed.draft.attendees[0]?.status).toBe("resolved");
+    expect(parsed.draft.attendees[0]?.open_id).toBe("ou_alan_123");
+    expect(parsed.preview).toContain("已解析参会人");
+    expect(parsed.preview).toContain("Alan");
+  });
+
+  it("draft preview marks Unknown as unresolved when no mapping exists", async () => {
+    const tool = await buildTool({ attendeeMap: "Alan=ou_alan_123" });
+    const result = await tool.execute("draft-c5-unknown", {
+      action: "create_event_draft",
+      title: "Sync",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "邀请 Unknown 参加",
+    });
+    const parsed = JSON.parse(result.content[0].text) as {
+      draft: { attendees: AttendeeEntry[]; draft_id: string };
+      preview: string;
+    };
+    expect(parsed.draft.attendees).toHaveLength(1);
+    expect(parsed.draft.attendees[0]?.status).toBe("unresolved");
+    expect(parsed.preview).toContain("⚠️ 未解析参会人");
+    expect(parsed.preview).toContain("*不会* 被邀请");
+  });
+
+  it("create_event invites resolved attendees via Feishu API and returns invited list", async () => {
+    const tool = await buildTool({ attendeeMap: "Alan=ou_alan_123;Peter=ou_peter_456" });
+    const draftR = await tool.execute("d1", {
+      action: "create_event_draft",
+      title: "产品讨论",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "邀请 Alan 和 Peter",
+    });
+    const dParsed = JSON.parse(draftR.content[0].text) as { draft: { draft_id: string } };
+    const r = await tool.execute("e1", {
+      action: "create_event",
+      draft_id: dParsed.draft.draft_id,
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.event_id).toBe("evt_c5_1");
+    expect(parsed.invited_attendees).toEqual([
+      { name: "Alan", open_id_masked: expect.any(String) },
+      { name: "Peter", open_id_masked: expect.any(String) },
+    ]);
+    expect(parsed.not_invited_attendees).toEqual([]);
+
+    // Feishu attendee API was called exactly once with both user_ids.
+    expect(calendarEventAttendeeCreateMock).toHaveBeenCalledOnce();
+    const callArg = calendarEventAttendeeCreateMock.mock.calls[0][0];
+    expect(callArg.params.user_id_type).toBe("open_id");
+    expect(callArg.path).toEqual({ calendar_id: "cal_default", event_id: "evt_c5_1" });
+    expect(callArg.data.attendees).toEqual([
+      { type: "user", user_id: "ou_alan_123", is_optional: false },
+      { type: "user", user_id: "ou_peter_456", is_optional: false },
+    ]);
+    expect(callArg.data.need_notification).toBe(true);
+  });
+
+  it("create_event does NOT call attendee API when nobody is resolved", async () => {
+    const tool = await buildTool({ attendeeMap: "Alan=ou_alan_123" });
+    const draftR = await tool.execute("d2", {
+      action: "create_event_draft",
+      title: "Sync",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "邀请 Stranger",
+    });
+    const dParsed = JSON.parse(draftR.content[0].text) as { draft: { draft_id: string } };
+    const r = await tool.execute("e2", {
+      action: "create_event",
+      draft_id: dParsed.draft.draft_id,
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+
+    expect(parsed.success).toBe(true);
+    expect(calendarEventAttendeeCreateMock).not.toHaveBeenCalled();
+    expect(parsed.invited_attendees).toEqual([]);
+    expect(parsed.not_invited_attendees).toEqual([
+      { name: "Stranger", reason: expect.stringContaining("Unresolved name") },
+    ]);
+  });
+
+  it("returns partial_failure flag when attendee API errors but event was created", async () => {
+    calendarEventAttendeeCreateMock.mockResolvedValueOnce({ code: 11502, msg: "no permission" });
+    const tool = await buildTool({ attendeeMap: "Alan=ou_alan_123" });
+    const draftR = await tool.execute("d3", {
+      action: "create_event_draft",
+      title: "Sync",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "邀请 Alan",
+    });
+    const dParsed = JSON.parse(draftR.content[0].text) as { draft: { draft_id: string } };
+    const r = await tool.execute("e3", {
+      action: "create_event",
+      draft_id: dParsed.draft.draft_id,
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+
+    // Event itself still succeeded
+    expect(parsed.success).toBe(true);
+    expect(parsed.event_id).toBe("evt_c5_1");
+    // Attendee failure is surfaced, not silently dropped
+    expect(parsed.attendee_partial_failure).toBe(true);
+    expect(parsed.invited_attendees).toEqual([]);
+    expect(parsed.not_invited_attendees).toEqual([
+      expect.objectContaining({
+        name: "Alan",
+        reason: expect.stringContaining("code=11502"),
+      }),
+    ]);
+  });
+
+  it("returns partial_failure when calendarEventAttendee API is missing (permission gap)", async () => {
+    // Simulate SDK without attendee API surface
+    createFeishuClientMock.mockReturnValue({
+      calendar: { calendarEvent: { create: calendarEventCreateMock } },
+    });
+    const tool = await buildTool({ attendeeMap: "Alan=ou_alan_123" });
+    const draftR = await tool.execute("d4", {
+      action: "create_event_draft",
+      title: "Sync",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "邀请 Alan",
+    });
+    const dParsed = JSON.parse(draftR.content[0].text) as { draft: { draft_id: string } };
+    const r = await tool.execute("e4", {
+      action: "create_event",
+      draft_id: dParsed.draft.draft_id,
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+
+    expect(parsed.success).toBe(true);
+    expect(parsed.attendee_partial_failure).toBe(true);
+    expect(parsed.not_invited_attendees).toEqual([
+      expect.objectContaining({
+        name: "Alan",
+        reason: expect.stringContaining("calendar.event.attendee.create"),
+      }),
+    ]);
+  });
+
+  it("mixed: invites resolved Alan, reports Unknown as not invited", async () => {
+    const tool = await buildTool({ attendeeMap: "Alan=ou_alan_123" });
+    const draftR = await tool.execute("d5", {
+      action: "create_event_draft",
+      title: "Mixed",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "邀请 Alan 和 Unknown",
+    });
+    const dParsed = JSON.parse(draftR.content[0].text) as { draft: { draft_id: string } };
+    const r = await tool.execute("e5", {
+      action: "create_event",
+      draft_id: dParsed.draft.draft_id,
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+
+    expect(parsed.success).toBe(true);
+    // Only Alan was invited
+    expect((parsed.invited_attendees as Array<{ name: string }>).map((a) => a.name)).toEqual([
+      "Alan",
+    ]);
+    // Unknown is in not_invited_attendees as unresolved
+    expect((parsed.not_invited_attendees as Array<{ name: string }>).map((a) => a.name)).toContain(
+      "Unknown",
+    );
+    // Attendee API called only with Alan's open_id
+    const callArg = calendarEventAttendeeCreateMock.mock.calls[0][0];
+    expect(callArg.data.attendees).toEqual([
+      { type: "user", user_id: "ou_alan_123", is_optional: false },
+    ]);
+  });
+
+  it("solo meeting (no attendees) does not call attendee API and returns empty lists", async () => {
+    const tool = await buildTool({ attendeeMap: "Alan=ou_alan_123" });
+    const draftR = await tool.execute("d6", {
+      action: "create_event_draft",
+      title: "Solo",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "帮我创建一个会议，明天下午3点",
+    });
+    const dParsed = JSON.parse(draftR.content[0].text) as { draft: { draft_id: string } };
+    const r = await tool.execute("e6", {
+      action: "create_event",
+      draft_id: dParsed.draft.draft_id,
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+
+    expect(parsed.success).toBe(true);
+    expect(calendarEventAttendeeCreateMock).not.toHaveBeenCalled();
+    expect(parsed.invited_attendees).toEqual([]);
+    expect(parsed.not_invited_attendees).toEqual([]);
+  });
+
+  it("accepts LLM-provided open_id in attendees array (passthrough)", async () => {
+    const tool = await buildTool({ attendeeMap: "" });
+    const draftR = await tool.execute("d7", {
+      action: "create_event_draft",
+      title: "Direct",
+      start_time: "2026-05-15T15:00:00+08:00",
+      end_time: "2026-05-15T16:00:00+08:00",
+      original_text: "schedule with Bob",
+      attendees: [{ name: "Bob", open_id: "ou_bob_explicit" }],
+    });
+    const dParsed = JSON.parse(draftR.content[0].text) as { draft: { draft_id: string } };
+    const r = await tool.execute("e7", {
+      action: "create_event",
+      draft_id: dParsed.draft.draft_id,
+    });
+    const parsed = JSON.parse(r.content[0].text) as Record<string, unknown>;
+
+    expect(parsed.success).toBe(true);
+    expect((parsed.invited_attendees as Array<{ name: string }>).map((a) => a.name)).toEqual([
+      "Bob",
+    ]);
+    const callArg = calendarEventAttendeeCreateMock.mock.calls[0][0];
+    expect(callArg.data.attendees).toEqual([
+      { type: "user", user_id: "ou_bob_explicit", is_optional: false },
+    ]);
   });
 });

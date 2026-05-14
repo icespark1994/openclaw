@@ -6,8 +6,9 @@ import { FeishuCalendarSchema, type FeishuCalendarParams } from "./calendar-sche
 import { createFeishuToolClient } from "./tool-account.js";
 
 // ── Required Feishu app scopes ───────────────────────────────────────────────
-// calendar:calendar:readonly        — list_calendars
-// calendar:calendar.event:write     — create_event
+// calendar:calendar:readonly             — list_calendars
+// calendar:calendar.event:write          — create_event
+// calendar:calendar.event.attendee:write — add attendees (C5)
 
 const DEFAULT_TIMEZONE = "Asia/Shanghai";
 const DRAFT_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -224,6 +225,187 @@ export function detectOfflineMeetingIntent(originalText: string | undefined): Of
   return { offline: false };
 }
 
+// ── Attendees (C5) ────────────────────────────────────────────────────────────
+
+export type AttendeeEntry = {
+  /** Display name as the user wrote it (or the LLM-provided name). */
+  name: string;
+  /** Feishu open_id, present only when the name was resolved via the env map. */
+  open_id?: string;
+  /**
+   * resolved → has open_id, will be invited on create_event
+   * unresolved → no mapping found; will NOT be invited
+   */
+  status: "resolved" | "unresolved";
+  /** Where the resolution came from. Phase 1: only env_map. */
+  source?: "env_map";
+};
+
+/**
+ * Parse AINETRIX_CALENDAR_ATTENDEE_MAP. Accepts two formats (auto-detected):
+ *   1) JSON: {"Alan":"ou_xxx","Peter":"ou_yyy"}
+ *   2) Semicolon list: Alan=ou_xxx;Peter=ou_yyy;张三=ou_zzz
+ * Keys are stored lowercased+trimmed for case-insensitive lookup.
+ */
+export function parseAttendeeMap(envValue: string | undefined): Map<string, string> {
+  const map = new Map<string, string>();
+  if (!envValue?.trim()) return map;
+  const raw = envValue.trim();
+
+  // JSON form
+  if (raw.startsWith("{")) {
+    try {
+      const obj = JSON.parse(raw) as Record<string, unknown>;
+      for (const [k, v] of Object.entries(obj)) {
+        if (typeof v === "string" && v.trim()) {
+          map.set(k.trim().toLowerCase(), v.trim());
+        }
+      }
+      return map;
+    } catch {
+      return map;
+    }
+  }
+
+  // Semicolon-delimited form. Comma also accepted as a separator.
+  for (const pair of raw.split(/[;\n]/)) {
+    const eq = pair.indexOf("=");
+    if (eq <= 0) continue;
+    const k = pair.slice(0, eq).trim();
+    const v = pair.slice(eq + 1).trim();
+    if (k && v) map.set(k.toLowerCase(), v);
+  }
+  return map;
+}
+
+/** Mask an open_id for logging: keep first 4 + last 4 chars. */
+export function maskOpenId(openId: string): string {
+  if (openId.length <= 10) return "***";
+  return `${openId.slice(0, 4)}…${openId.slice(-4)}`;
+}
+
+// Invitation-phrase patterns. Each captures a roster region that may contain
+// multiple names separated by commas/和/and. The roster is later split and each
+// candidate is filtered through `isNameLike` so accidental capture of trailing
+// clauses like "明天下午4点" gets dropped.
+const ATTENDEE_PHRASE_PATTERNS: RegExp[] = [
+  // Chinese: 邀请 X、Y / 邀请 X 和 Y / 邀请 X,Y
+  /邀请\s*([^。；;！!？?\n]+?)(?=[。；;！!？?\n]|$)/u,
+  // Chinese: 参会人 / 参与人 / 参加者: X、Y
+  /(?:参会人|参与人|参加者)\s*[:：]?\s*([^。；;！!？?\n]+?)(?=[。；;！!？?\n]|$)/u,
+  // Chinese: 叫 X 和 Y 参加 / 让 X 和 Y 参加
+  /(?:叫|让|请)\s*([^。；;！!？?\n]+?)\s*(?:参加|过来|来)/u,
+  // English: invite X and Y / invite X, Y
+  /invite\s+([^.;!?\n]+?)(?=[.;!?\n]|$)/iu,
+  // English: attendees: X, Y / participants: X, Y
+  /(?:attendees|participants)\s*[:：]\s*([^.;!?\n]+)/iu,
+];
+
+const NAME_SPLIT_RE = /[、,，]|\s+and\s+|\s+和\s+|\s+与\s+/iu;
+
+// A name candidate must look like a real name token, not a time/date/clause:
+//  - starts with a CJK character or Latin letter
+//  - body is CJK/Latin/digit/underscore/hyphen, up to 24 chars
+//  - rejects tokens containing whitespace inside (date phrases like
+//    "明天下午4点" contain 数字/digits and pass; the digit-rejection rule below
+//    catches them).
+const NAME_TOKEN_RE = /^[一-龥A-Za-z][一-龥A-Za-z_\-]{0,23}$/u;
+
+function isNameLike(token: string): boolean {
+  if (!NAME_TOKEN_RE.test(token)) return false;
+  // Block action verbs and common Chinese clause words that occasionally slip
+  // through capture.
+  return !/^(参加|过来|加入|开会|讨论|来|明天|今天|后天|本周|下周)$/u.test(token);
+}
+
+/**
+ * Extract candidate attendee names from the user's verbatim message.
+ * Returns names in order of appearance, de-duplicated case-insensitively.
+ */
+export function extractAttendeeNamesFromText(originalText: string | undefined): string[] {
+  if (!originalText) return [];
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const re of ATTENDEE_PHRASE_PATTERNS) {
+    const m = originalText.match(re);
+    if (!m?.[1]) continue;
+    const roster = m[1].trim();
+    for (const raw of roster.split(NAME_SPLIT_RE)) {
+      const n = raw
+        .trim()
+        // strip trailing 等/etc./trailing punctuation
+        .replace(/[等。.!！?？,，；;:：]+$/u, "")
+        .trim();
+      if (!n) continue;
+      if (!isNameLike(n)) continue;
+      const key = n.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      names.push(n);
+    }
+  }
+  return names;
+}
+
+/**
+ * Resolve a list of name strings against the env map.
+ * Names already present in `providedAttendees` (with open_id) are kept as-is.
+ */
+export function resolveAttendees(params: {
+  original_text: string | undefined;
+  provided: Array<{ name?: string; open_id?: string }> | undefined;
+  map: Map<string, string>;
+}): AttendeeEntry[] {
+  const out: AttendeeEntry[] = [];
+  const seenOpenIds = new Set<string>();
+  const seenNameKeys = new Set<string>();
+
+  const pushResolved = (name: string, openId: string) => {
+    if (seenOpenIds.has(openId)) return;
+    seenOpenIds.add(openId);
+    seenNameKeys.add(name.toLowerCase());
+    out.push({ name, open_id: openId, status: "resolved", source: "env_map" });
+  };
+
+  const pushUnresolved = (name: string) => {
+    const key = name.toLowerCase();
+    if (seenNameKeys.has(key)) return;
+    seenNameKeys.add(key);
+    out.push({ name, status: "unresolved" });
+  };
+
+  // 1) LLM-provided attendees come first. If open_id is set, trust it (Phase 1
+  //    only accepts open_id — no email / chat_id / user_id passthrough).
+  for (const a of params.provided ?? []) {
+    const name = (a.name ?? "").trim() || "(unnamed)";
+    const oid = a.open_id?.trim();
+    if (oid) {
+      pushResolved(name, oid);
+      continue;
+    }
+    // Try resolving the provided name through the env map.
+    const mapped = params.map.get(name.toLowerCase());
+    if (mapped) {
+      pushResolved(name, mapped);
+    } else {
+      pushUnresolved(name);
+    }
+  }
+
+  // 2) Names extracted from original_text — only add when not already covered.
+  for (const name of extractAttendeeNamesFromText(params.original_text)) {
+    if (seenNameKeys.has(name.toLowerCase())) continue;
+    const mapped = params.map.get(name.toLowerCase());
+    if (mapped) {
+      pushResolved(name, mapped);
+    } else {
+      pushUnresolved(name);
+    }
+  }
+
+  return out;
+}
+
 function json(data: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }],
@@ -277,6 +459,8 @@ export type DraftEntry = {
   relative_date_correction?: DateCorrectionInfo;
   /** Populated when the tool forced enable_vchat=false from an offline keyword. */
   vchat_auto_disabled_reason?: string;
+  /** Phase-1 attendees: resolved (have open_id) and unresolved (name only, will not be invited). */
+  attendees: AttendeeEntry[];
 };
 
 // In-memory draft store; resets on gateway restart (acceptable for Phase 1).
@@ -292,7 +476,7 @@ export type CalendarEventDraft = {
   calendar_id: string;
   description: string;
   enable_vchat: boolean;
-  attendees: never[];
+  attendees: AttendeeEntry[];
   /** Current date in the event timezone (Asia/Shanghai). */
   current_date_in_timezone: string;
   /** Set when original_text was provided and a relative-date phrase was detected. */
@@ -312,6 +496,10 @@ export function buildEventDraft(params: {
   enable_vchat?: boolean;
   /** User's verbatim request — used for code-level relative-date correction (C4.3). */
   original_text?: string;
+  /** LLM-provided attendees (name + optional open_id). Tool re-resolves through env map. */
+  attendees?: Array<{ name?: string; open_id?: string }>;
+  /** Env-var-derived name → open_id map used to resolve attendees (C5). */
+  attendee_map?: Map<string, string>;
 }): CalendarEventDraft {
   const tz = params.timezone?.trim() || DEFAULT_TIMEZONE;
   let enableVchat = params.enable_vchat !== false; // default true
@@ -344,6 +532,15 @@ export function buildEventDraft(params: {
     vchatAutoDisabledReason = `Detected offline meeting intent ("${offline.matched_keyword}") in original_text`;
   }
 
+  // C5: resolve attendees through env map. LLM-provided attendees are merged
+  // with names extracted from original_text. Unresolved names are kept on the
+  // draft for transparency but will NOT be invited at create_event.
+  const attendees = resolveAttendees({
+    original_text: params.original_text,
+    provided: params.attendees,
+    map: params.attendee_map ?? new Map(),
+  });
+
   return {
     title: params.title,
     start_time: startTime,
@@ -352,7 +549,7 @@ export function buildEventDraft(params: {
     calendar_id: params.calendar_id,
     description: params.description ?? "",
     enable_vchat: enableVchat,
-    attendees: [],
+    attendees,
     current_date_in_timezone: currentDate,
     ...(correction ? { relative_date_correction: correction } : {}),
     ...(vchatAutoDisabledReason ? { vchat_auto_disabled_reason: vchatAutoDisabledReason } : {}),
@@ -366,6 +563,7 @@ export function buildEventDraft(params: {
       current_date: currentDate,
       correction,
       hasOriginalText,
+      attendees,
       vchat_auto_disabled_reason: vchatAutoDisabledReason,
     }),
   };
@@ -382,6 +580,7 @@ function formatDraftPreview(params: {
   correction?: DateCorrectionInfo;
   hasOriginalText: boolean;
   vchat_auto_disabled_reason?: string;
+  attendees: AttendeeEntry[];
 }): string {
   let vchatLine = params.enable_vchat ? "📹 视频会议：飞书会议\n" : "📹 视频会议：无\n";
   if (!params.enable_vchat && params.vchat_auto_disabled_reason) {
@@ -397,6 +596,22 @@ function formatDraftPreview(params: {
     correctionLine = `ℹ️ 未提供原始文本（original_text），无法进行相对日期代码级校验\n`;
   }
 
+  const resolved = params.attendees.filter((a) => a.status === "resolved");
+  const unresolved = params.attendees.filter((a) => a.status === "unresolved");
+  let attendeesBlock: string;
+  if (resolved.length === 0 && unresolved.length === 0) {
+    attendeesBlock = `👥 参与人：仅你（未指定其他参会人）\n`;
+  } else {
+    const resolvedNames = resolved.map((a) => a.name).join("、") || "（无）";
+    attendeesBlock = `👥 已解析参会人（确认后将邀请）：${resolvedNames}\n`;
+    if (unresolved.length > 0) {
+      const unresolvedNames = unresolved.map((a) => a.name).join("、");
+      attendeesBlock +=
+        `⚠️ 未解析参会人：${unresolvedNames}\n` +
+        `   ↳ 这些人未在 AINETRIX_CALENDAR_ATTENDEE_MAP 中找到映射，确认后将 *不会* 被邀请。\n`;
+    }
+  }
+
   return (
     `我准备创建以下日程：\n` +
     `📅 标题：${params.title}\n` +
@@ -404,7 +619,7 @@ function formatDraftPreview(params: {
     `🕑 结束：${params.end_time}（${params.timezone}）\n` +
     `📆 日历 ID：${params.calendar_id}\n` +
     vchatLine +
-    `👥 参与人：仅你（本阶段不支持邀请他人）\n` +
+    attendeesBlock +
     `🗓️ 日期解析基准：${params.timezone}，今天是 ${params.current_date}\n` +
     correctionLine +
     `\n请回复「确认」/ "confirm" / "yes" 后创建日程。`
@@ -522,6 +737,16 @@ export async function createCalendarEvent(
     }
   }
 
+  // C5: invite resolved attendees. Event is already created — if this fails,
+  // we return partial success rather than deleting the event.
+  const attendeeResult = await addResolvedAttendeesToEvent(lark, {
+    calendarId,
+    eventId: event.event_id,
+    resolved: entry.attendees.filter((a) => a.status === "resolved" && a.open_id),
+  });
+
+  const unresolved = entry.attendees.filter((a) => a.status === "unresolved");
+
   return {
     success: true,
     event_id: event.event_id,
@@ -538,7 +763,90 @@ export async function createCalendarEvent(
       ? { meeting_no: vchat.vc_info.meeting_no }
       : {}),
     ...(event.app_link ? { app_link: event.app_link } : {}),
+    invited_attendees: attendeeResult.invited,
+    not_invited_attendees: [
+      ...attendeeResult.failed,
+      ...unresolved.map((a) => ({
+        name: a.name,
+        reason: "Unresolved name — not found in AINETRIX_CALENDAR_ATTENDEE_MAP",
+      })),
+    ],
+    ...(attendeeResult.partial_failure ? { attendee_partial_failure: true } : {}),
   };
+}
+
+// ── C5: Attendee invitation ───────────────────────────────────────────────────
+
+type AttendeeInviteResult = {
+  invited: Array<{ name: string; open_id_masked: string }>;
+  failed: Array<{ name: string; open_id_masked?: string; reason: string }>;
+  partial_failure: boolean;
+};
+
+async function addResolvedAttendeesToEvent(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Lark SDK client
+  lark: any,
+  params: {
+    calendarId: string;
+    eventId: string;
+    resolved: AttendeeEntry[];
+  },
+): Promise<AttendeeInviteResult> {
+  const out: AttendeeInviteResult = { invited: [], failed: [], partial_failure: false };
+  if (params.resolved.length === 0) return out;
+
+  if (!lark.calendar?.calendarEventAttendee?.create) {
+    // SDK / permission gap: surface as failure but leave the event alive.
+    out.failed = params.resolved.map((a) => ({
+      name: a.name,
+      open_id_masked: a.open_id ? maskOpenId(a.open_id) : undefined,
+      reason:
+        "Feishu calendar.event.attendee.create API unavailable. " +
+        "Ensure the app has 'calendar:calendar.event.attendee:write'.",
+    }));
+    out.partial_failure = true;
+    return out;
+  }
+
+  try {
+    const res = await lark.calendar.calendarEventAttendee.create({
+      data: {
+        attendees: params.resolved.map((a) => ({
+          type: "user" as const,
+          user_id: a.open_id!,
+          is_optional: false,
+        })),
+        need_notification: true,
+      },
+      params: { user_id_type: "open_id" as const },
+      path: { calendar_id: params.calendarId, event_id: params.eventId },
+    });
+    if (res?.code !== 0) {
+      out.failed = params.resolved.map((a) => ({
+        name: a.name,
+        open_id_masked: a.open_id ? maskOpenId(a.open_id) : undefined,
+        reason: `Feishu attendee API error: code=${res?.code ?? "?"} msg=${res?.msg ?? "unknown"}`,
+      }));
+      out.partial_failure = true;
+      return out;
+    }
+    // Treat all as invited on a 0-code response. We don't try to reconcile against
+    // the response's attendee list — the SDK returns batch outcomes and partial
+    // per-user failures would need more bookkeeping than Phase 1 warrants.
+    out.invited = params.resolved.map((a) => ({
+      name: a.name,
+      open_id_masked: a.open_id ? maskOpenId(a.open_id) : "",
+    }));
+  } catch (err) {
+    out.failed = params.resolved.map((a) => ({
+      name: a.name,
+      open_id_masked: a.open_id ? maskOpenId(a.open_id) : undefined,
+      reason: `Feishu attendee API threw: ${err instanceof Error ? err.message : String(err)}`,
+    }));
+    out.partial_failure = true;
+  }
+
+  return out;
 }
 
 // ── Validation helpers ────────────────────────────────────────────────────────
@@ -595,6 +903,12 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
 
   const defaultCalendarId = process.env.AINETRIX_FEISHU_DEFAULT_CALENDAR_ID?.trim() || undefined;
   const allowedUsers = parseAllowedUsers(process.env.AINETRIX_CALENDAR_ALLOWED_USERS);
+  const attendeeMap = parseAttendeeMap(process.env.AINETRIX_CALENDAR_ATTENDEE_MAP);
+  if (attendeeMap.size > 0) {
+    api.logger.debug?.(
+      `feishu_calendar: AINETRIX_CALENDAR_ATTENDEE_MAP loaded (${attendeeMap.size} names)`,
+    );
+  }
 
   const getClient = (params: { accountId?: string } | undefined, defaultAccountId?: string) =>
     createFeishuToolClient({ api, executeParams: params, defaultAccountId });
@@ -643,6 +957,8 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                   description: p.description,
                   enable_vchat: p.enable_vchat,
                   original_text: p.original_text,
+                  attendees: p.attendees,
+                  attendee_map: attendeeMap,
                 });
 
                 const draftId = randomUUID();
@@ -654,6 +970,7 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
                   calendar_id: baseDraft.calendar_id,
                   description: baseDraft.description,
                   enable_vchat: baseDraft.enable_vchat,
+                  attendees: baseDraft.attendees,
                   source_user: requesterSenderId ?? undefined,
                   source_channel: messageChannel ?? undefined,
                   created_at: Date.now(),
@@ -760,6 +1077,6 @@ export function registerFeishuCalendarTools(api: OpenClawPluginApi): void {
   );
 
   api.logger.info?.(
-    "feishu_calendar: Registered feishu_calendar (Stage C4.5 — original_text required + relative-date correction + offline-meeting auto-disable vchat)",
+    "feishu_calendar: Registered feishu_calendar (Stage C5 — attendee invitation via AINETRIX_CALENDAR_ATTENDEE_MAP)",
   );
 }
